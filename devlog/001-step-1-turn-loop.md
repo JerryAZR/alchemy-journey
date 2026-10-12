@@ -75,18 +75,47 @@ of how the code actually evolved. The fix — the **intents vs. driver split**
 the enemy turn) — is the next commit, and it's much easier to explain against
 real code than against a hypothetical.
 
-## Smaller course corrections (process lessons, not typos)
+## The hand-rolled RNG (and when hand-rolling is justified)
 
-- **Hand-rolled RNG → `rand`.** The first implementation had a hand-written
-  xorshift64 + Fisher-Yates to "keep the logic core dependency-free." Weak
-  reason: Bevy has no built-in RNG, `rand`'s `StdRng::seed_from_u64` gives
-  determinism anyway, and the hand-rolled shuffle had modulo bias. Lesson:
-  "no dependencies" is not a virtue when the dependency is the battle-tested
-  standard for exactly your problem.
-- **In-UI log → terminal log.** The playtest question "did the last card draw
-  happen before or after the reshuffle?" was unanswerable from a 5-line UI log
-  panel. The log moved to the terminal, per-event. Lesson: for prototype
-  playtesting, *observability* of the simulation beats presentation.
+The first implementation contained a hand-written xorshift64* generator and a
+hand-written Fisher-Yates shuffle, about 25 lines, justified at the time as
+"keeping the logic core dependency-free." It was replaced by the `rand` crate's
+`StdRng::seed_from_u64` and `SliceRandom::shuffle` before this commit.
+
+Why the justification didn't hold:
+
+- **The goal was determinism, not independence.** What the game needs is
+  "same seed → same shuffle," so that tests and (eventually) replays are
+  reproducible. `StdRng::seed_from_u64` provides exactly that. Hand-rolling
+  added nothing toward the actual requirement.
+- **The hand-rolled version was quietly worse.** Its shuffle picked indices
+  with `rng() % n`, which is modulo-biased: when the RNG range isn't a
+  multiple of `n`, low indices are slightly favored. Irrelevant for a card
+  game, but it's exactly the class of subtle flaw you get for free when you
+  reimplement solved problems.
+- **The dependency cost was imaginary.** `rand` is the Rust ecosystem's
+  standard answer to this exact problem, already audited, tested, and
+  maintained by people who think about RNG quality full-time.
+
+The general rule we took from it: **prefer something mature and existing over
+hand-rolling, unless you can articulate why hand-rolling is necessary** — and
+"fewer dependencies" is not, by itself, an articulation. Legitimate
+justifications do exist: the thing is your core domain (our combat state
+machine is hand-rolled because it *is* the product), no existing solution fits
+a hard constraint, or you need control the library can't give. None applied
+here.
+
+(One honest footnote: `StdRng`'s algorithm may change across `rand` versions,
+so if we ever need replays stable across builds we'll pin a specific generator
+like `ChaCha8Rng`. That's noted in the code. It's a one-line change, not a
+reason to hand-roll.)
+
+## Smaller course correction: in-UI log → terminal log
+
+The playtest question "did the last card draw happen before or after the
+reshuffle?" was unanswerable from a 5-line UI log panel. The log moved to the
+terminal, one line per event. Lesson: for prototype playtesting,
+*observability* of the simulation beats presentation.
 
 ## What's next
 
