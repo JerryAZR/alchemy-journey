@@ -1,0 +1,8 @@
+[package]
+name = "alchemy-journey"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.20", default-features = false, features = ["ui", "2d"] }
+rand = "0.10.3"
