@@ -122,11 +122,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "alchemy-combat"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "alchemy-journey"
 version = "0.1.0"
 dependencies = [
+ "alchemy-combat",
  "bevy",
- "rand",
 ]
 
 [[package]]

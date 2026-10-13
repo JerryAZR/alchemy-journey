@@ -3,6 +3,9 @@ name = "alchemy-journey"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/combat"]
+
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = ["ui", "2d"] }
-rand = "0.10.3"
+alchemy-combat = { path = "crates/combat" }

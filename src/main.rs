@@ -1,4 +1,5 @@
-mod combat;
+mod driver;
+mod terminal;
 mod ui;
 
 use bevy::prelude::*;
@@ -23,6 +24,6 @@ fn main() {
         .add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Camera2d);
         })
-        .add_plugins(ui::UiPlugin)
+        .add_plugins((driver::DriverPlugin, terminal::TerminalPlugin, ui::UiPlugin))
         .run();
 }

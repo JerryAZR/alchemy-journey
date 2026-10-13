@@ -1,17 +1,14 @@
-//! Bevy UI layer: renders [`CombatState`] and forwards player input to it.
-//! Contains no game rules — all mutations go through `combat::CombatState`.
+//! The UI frontend: renders a projection of [`CombatState`] and submits
+//! player intents. It never mutates combat state (COMBAT.md Ruling 4).
 
+use alchemy_combat::{CombatState, Intent, Phase, Unit};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::{Activate, Button, observe};
 
 use crate::AppState;
-use crate::combat::{self, CombatState};
-
-/// Bevy resource wrapper so `CombatState` itself stays Bevy-free.
-#[derive(Resource)]
-pub struct Combat(pub CombatState);
+use crate::driver::{Combat, IntentQueue};
 
 #[derive(Component)]
 struct MenuRoot;
@@ -43,12 +40,8 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Menu), setup_menu)
             .add_systems(OnExit(AppState::Menu), despawn_all::<MenuRoot>)
-            .add_systems(OnEnter(AppState::Combat), setup_combat)
-            .add_systems(OnExit(AppState::Combat), teardown_combat)
-            .add_systems(
-                Update,
-                (refresh_combat_ui, update_button_tints, print_new_log_entries),
-            );
+            .add_systems(OnExit(AppState::Combat), despawn_all::<CombatUiRoot>)
+            .add_systems(Update, (refresh_combat_ui, update_button_tints));
     }
 }
 
@@ -56,13 +49,6 @@ fn despawn_all<T: Component>(mut commands: Commands, query: Query<Entity, With<T
     for entity in &query {
         commands.entity(entity).despawn();
     }
-}
-
-fn seed_from_time() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,22 +82,12 @@ fn setup_menu(mut commands: Commands) {
 }
 
 // ---------------------------------------------------------------------------
-// Combat
+// Combat projection
 // ---------------------------------------------------------------------------
 
-fn setup_combat(mut commands: Commands) {
-    commands.insert_resource(Combat(combat::starter_combat(seed_from_time())));
-}
-
-fn teardown_combat(mut commands: Commands, roots: Query<Entity, With<CombatUiRoot>>) {
-    commands.remove_resource::<Combat>();
-    for entity in &roots {
-        commands.entity(entity).despawn();
-    }
-}
-
 /// Rebuilds the whole combat UI whenever the combat state changes.
-/// Cheap at this scale (≤ 11 cards) and keeps rendering trivially in sync.
+/// Cheap at this scale (≤ 11 cards) and keeps the projection trivially in
+/// sync — the UI is rebuildable from state at any time, by construction.
 fn refresh_combat_ui(
     mut commands: Commands,
     combat: Option<Res<Combat>>,
@@ -125,25 +101,6 @@ fn refresh_combat_ui(
         commands.entity(entity).despawn();
     }
     spawn_combat_ui(&mut commands, &combat.0);
-}
-
-/// Prints combat log entries to the terminal as they appear.
-fn print_new_log_entries(combat: Option<Res<Combat>>, mut printed: Local<usize>) {
-    let Some(combat) = combat else {
-        *printed = 0;
-        return;
-    };
-    if combat.is_added() {
-        *printed = 0;
-    }
-    let log = &combat.0.log;
-    if *printed > log.len() {
-        *printed = 0; // New combat reusing the resource.
-    }
-    for entry in &log[*printed..] {
-        println!("[combat] {entry}");
-    }
-    *printed = log.len();
 }
 
 fn spawn_combat_ui(commands: &mut Commands, state: &CombatState) {
@@ -179,8 +136,8 @@ fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
         })
         .with_children(|bar| {
             let phase = match state.phase {
-                combat::Phase::PlayerTurn => "Player Turn",
-                combat::Phase::EnemyTurn => "Enemy Turn",
+                Phase::PlayerTurn => "Player Turn",
+                Phase::EnemyTurn => "Enemy Turn",
             };
             bar.spawn(label(
                 format!("Turn {} — {phase}   Energy: {}", state.turn, state.energy),
@@ -231,7 +188,7 @@ fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState) {
         });
 }
 
-fn spawn_unit_panel(parent: &mut ChildSpawnerCommands, unit: &combat::Unit, color: Color) {
+fn spawn_unit_panel(parent: &mut ChildSpawnerCommands, unit: &Unit, color: Color) {
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -285,8 +242,8 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
                     hand.spawn((
                         card_button(&card.def.name, card.def.cost),
                         observe(
-                            move |_: On<Activate>, mut combat: ResMut<Combat>| {
-                                let _ = combat.0.play_card(index);
+                            move |_: On<Activate>, mut queue: ResMut<IntentQueue>| {
+                                queue.submit(Intent::PlayCard { hand_index: index });
                             },
                         ),
                     ));
@@ -295,9 +252,8 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
             // End turn.
             bar.spawn((
                 text_button("End Turn", 130.0, 56.0, Color::srgb(0.5, 0.4, 0.15)),
-                observe(|_: On<Activate>, mut combat: ResMut<Combat>| {
-                    combat.0.end_player_turn();
-                    combat.0.run_enemy_turn();
+                observe(|_: On<Activate>, mut queue: ResMut<IntentQueue>| {
+                    queue.submit(Intent::EndTurn);
                 }),
             ));
         });
