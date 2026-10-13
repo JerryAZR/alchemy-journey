@@ -103,20 +103,30 @@ printer is a second frontend riding the same event stream as the UI.
 No networking is built now. But the vocabulary is shaped so networking doesn't
 require redesign:
 
+- **Turns are concurrent; there is no turn order among players.** During a
+  shared turn, every player may play cards at any time. A turn ends when
+  *all* players have chosen to end it; ending is per-player and locks that
+  player out of further plays until the next turn. The core tracks who has
+  ended; the round machinery (enemy turn, draws) resolves inside the `step`
+  that completes the set.
+- **Concurrent resolution order is decided by the host.** Simultaneous card
+  plays are sequenced by the host's driver (arrival order); the host's event
+  stream is the single truth every client projects. Resolution order is
+  therefore deterministic and replayable.
 - **A connection controls a set of players** (common case: one). Identity
   travels in the intent payload as `actor`, because one connection may
   legitimately speak for several local players (couch co-op over the internet).
 - Player-slot assignment belongs to a lobby/join layer that doesn't exist yet.
   When it does, a server validating `actor ∈ connection's players` is a
   fail-loud bug tripwire, not a security boundary — we write both ends.
-- `CombatState` carries `active_player: PlayerId`; `step` rejects intents from
-  anyone else with `IntentRejected { reason: NotYourTurn }`. The game remains
-  single-player; only the vocabulary admits that players exist.
+- The game remains single-player; only the vocabulary admits that players
+  exist. `step` rejects plays from a player who has ended their turn
+  (`IntentRejected`), which single-player never triggers mid-turn.
 
 ## Explicitly deferred
 
 Animations, replays (enabled by determinism + events, unbuilt), serde derives,
-networking, multiple player units, turn order among players.
+networking, multiple player units, the lobby/join layer.
 
 Combat termination (win/loss, a terminal `CombatOver` phase) is a known
 *feature* gap — deliberately so: it arrives with damage in step 2. It is not a
