@@ -15,7 +15,12 @@ Everything observable about a combat is derivable from its inputs: the initial
 state, the RNG seed, and the intent sequence. The core is deterministic given
 those.
 
-## Ruling 2 — The vocabulary is data
+## Ruling 2 — The vocabulary is data, and it is provisional
+
+The lists below are the *current* vocabulary, not a frozen contract. If an
+event or intent turns out to be shaped wrong, change it; if a new one is
+needed, add it. What is stable is the *kind* of thing they are — plain data,
+indices not pointers — not any particular variant list.
 
 ```rust
 struct PlayerId(u32);
@@ -52,17 +57,18 @@ accepts **user actions only**. Consequences are never input:
 | `PlayCard { hand_index }` | card leaving hand, effects applied, discard/consume |
 | `EndTurn` | turn ending, hand discard, enemy turn, next turn start, turn-start draw |
 
-An action's resolution happens inside `step` and is reported as events.
-Machinery that no player initiates (the enemy turn, turn-start draws) advances
-via `advance() -> Vec<Event>` — **parameterless, a pure function of state**,
-one beat of machinery per call, safe no-op (empty stream) when nothing is
-pending. The caller cannot call it wrong. Whether machinery is pending is
-queryable state (`needs_advance()`, derivable from `phase`).
+Resolution is **synchronous and total**: `step` runs all machinery
+consequences of an action — draws, discards, the enemy turn, the next turn
+start — before returning, and the event stream reports everything in order.
+If the machinery would run eventually anyway, its timing is meaningless to
+the core, so the core runs it immediately.
 
-The transition graph lives wholly in the core. Callers own pacing — *when* to
-pump `advance()` — never sequencing, i.e. never *what follows what*. A driver
-that pumps whenever `needs_advance()` holds, with no other knowledge, is
-correct by construction.
+Between `step` calls the core rests **only at input boundaries**: states
+where it awaits a user action. Today that is one state (the local player's
+free action). Future decision points ("choose one of three cards") are also
+input boundaries: the decision is itself a user action (e.g.
+`ChooseOption { .. }`), never a machinery callback. There is no `advance()`
+door and no pacing in the core: it consumes intents as soon as they land.
 
 There is no rejection return value. An illegal intent produces an
 `IntentRejected` event; every call yields an event stream, and outcomes are
@@ -70,21 +76,23 @@ read from it. Side effects travel only as events.
 
 ## Ruling 4 — The app layer is policy; the core is mechanism
 
-The core never decides *when* `advance()` runs. Pacing (e.g. "the enemy turn
-begins 0.5s after the player ends theirs") is policy and lives in the
-app-layer driver. A future multiplayer server is a different driver over the
-same core.
+The core is a black box: callers submit actions, receive events, and may pull
+state at any time. How a frontend *presents* what happened — instantly, with
+delays, with animations — is entirely frontend policy over its own event
+cursor; the core never knows. Input gating during presentation (e.g. ignoring
+clicks while the enemy-turn animation plays) is likewise frontend policy:
+the core may already be resting at the next input boundary, and that is fine.
+A future multiplayer server is a different driver over the same core.
 
 App-layer structure, as composed Bevy plugins:
 
 - **Driver plugin** — owns the intent queue (one drain point: UI submits bare
   `Intent`s, the drain stamps the local `PlayerId` and calls `step`), owns the
-  pending-event buffer (one drain point, fanning out to frontends), owns
-  pacing timers.
-- **UI plugin** — a frontend: renders a projection of `CombatState` and submits
-  intents. It never mutates combat state directly and never calls
-  `advance_autonomous`. The projection is rebuildable from state at any time
-  (today: rebuilt on every change).
+  pending-event buffer (one drain point, fanning out to frontends).
+- **UI plugin** — a frontend: renders a projection of `CombatState` and the
+  event stream, and submits intents. It never mutates combat state directly.
+  The projection is rebuildable from state at any time (today: rebuilt on
+  every change).
 
 Rendering events to human-readable text (the terminal combat log) is one
 function in the app layer — the single home for that mapping. The terminal
