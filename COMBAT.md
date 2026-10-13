@@ -42,13 +42,27 @@ enum Event {
 Intents and events are plain data: indices, not pointers or entity IDs. They
 will derive `Serialize`/`Deserialize` when the wire exists, and not before.
 
-## Ruling 3 — Two doors, total semantics
+## Ruling 3 — One input door, and it accepts only user actions
 
-The core exposes exactly two mutation doors:
+`step(StampedIntent) -> Vec<Event>` is the only input door, and the protocol
+accepts **user actions only**. Consequences are never input:
 
-- `step(StampedIntent) -> Vec<Event>` — player intents.
-- `advance_autonomous() -> Vec<Event>` — transitions no player initiates
-  (today: the enemy turn).
+| user action (input) | machinery (the core's own job) |
+|---|---|
+| `PlayCard { hand_index }` | card leaving hand, effects applied, discard/consume |
+| `EndTurn` | turn ending, hand discard, enemy turn, next turn start, turn-start draw |
+
+An action's resolution happens inside `step` and is reported as events.
+Machinery that no player initiates (the enemy turn, turn-start draws) advances
+via `advance() -> Vec<Event>` — **parameterless, a pure function of state**,
+one beat of machinery per call, safe no-op (empty stream) when nothing is
+pending. The caller cannot call it wrong. Whether machinery is pending is
+queryable state (`needs_advance()`, derivable from `phase`).
+
+The transition graph lives wholly in the core. Callers own pacing — *when* to
+pump `advance()` — never sequencing, i.e. never *what follows what*. A driver
+that pumps whenever `needs_advance()` holds, with no other knowledge, is
+correct by construction.
 
 There is no rejection return value. An illegal intent produces an
 `IntentRejected` event; every call yields an event stream, and outcomes are
@@ -56,10 +70,10 @@ read from it. Side effects travel only as events.
 
 ## Ruling 4 — The app layer is policy; the core is mechanism
 
-The core never decides *when* `advance_autonomous` runs. Pacing (e.g. "the
-enemy turn begins 0.5s after the player ends theirs") is policy and lives in
-the app-layer driver. A future multiplayer server is a different driver over
-the same core.
+The core never decides *when* `advance()` runs. Pacing (e.g. "the enemy turn
+begins 0.5s after the player ends theirs") is policy and lives in the
+app-layer driver. A future multiplayer server is a different driver over the
+same core.
 
 App-layer structure, as composed Bevy plugins:
 
@@ -95,3 +109,7 @@ require redesign:
 
 Animations, replays (enabled by determinism + events, unbuilt), serde derives,
 networking, multiple player units, turn order among players.
+
+Combat termination (win/loss, a terminal `CombatOver` phase) is a known
+*feature* gap — deliberately so: it arrives with damage in step 2. It is not a
+structural gap; the machinery above already supports a terminal resting state.
