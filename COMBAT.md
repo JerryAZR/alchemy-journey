@@ -49,30 +49,40 @@ will derive `Serialize`/`Deserialize` when the wire exists, and not before.
 
 ## Ruling 3 — One input door, and it accepts only user actions
 
-`step(StampedIntent) -> Vec<Event>` is the only input door, and the protocol
-accepts **user actions only**. Consequences are never input:
+The engine's input door is a pair:
+
+```rust
+/// The host gate: read-only legality check.
+fn validate(&self, action: StampedIntent) -> Result<(), RejectReason>
+
+/// What every engine runs on an approved action: applies it and emits the
+/// locally-derived consequence stream (action echo + machinery events).
+fn process(&mut self, action: StampedIntent) -> Vec<Event>
+```
+
+The protocol accepts **user actions only**. Consequences are never input:
 
 | user action (input) | machinery (the core's own job) |
 |---|---|
 | `PlayCard { hand_index }` | card leaving hand, effects applied, discard/consume |
 | `EndTurn` | turn ending, hand discard, enemy turn, next turn start, turn-start draw |
 
-Resolution is **synchronous and total**: `step` runs all machinery
+Resolution is **synchronous and total**: `process` runs all machinery
 consequences of an action — draws, discards, the enemy turn, the next turn
 start — before returning, and the event stream reports everything in order.
 If the machinery would run eventually anyway, its timing is meaningless to
 the core, so the core runs it immediately.
 
-Between `step` calls the core rests **only at input boundaries**: states
+Between actions the core rests **only at input boundaries**: states
 where it awaits a user action. Today that is one state (the local player's
 free action). Future decision points ("choose one of three cards") are also
 input boundaries: the decision is itself a user action (e.g.
 `ChooseOption { .. }`), never a machinery callback. There is no `advance()`
-door and no pacing in the core: it consumes intents as soon as they land.
+door and no pacing in the core: it consumes actions as soon as they land.
 
-There is no rejection return value. An illegal intent produces an
-`IntentRejected` event; every call yields an event stream, and outcomes are
-read from it. Side effects travel only as events.
+Rejection is not part of the canonical stream: `validate` returns
+`Err(RejectReason)` and the host notifies only the rejected submitter.
+The event stream contains only things that actually happened.
 
 ## Ruling 4 — The app layer is policy; the core is mechanism
 
@@ -87,8 +97,9 @@ A future multiplayer server is a different driver over the same core.
 App-layer structure, as composed Bevy plugins:
 
 - **Driver plugin** — owns the intent queue (one drain point: UI submits bare
-  `Intent`s, the drain stamps the local `PlayerId` and calls `step`), owns the
-  pending-event buffer (one drain point, fanning out to frontends).
+  `Intent`s, the drain stamps the local `PlayerId`, `validate`s, and
+  `process`es), owns the pending-event buffer and the rejection-notice buffer
+  (one drain point each, fanning out to frontends).
 - **UI plugin** — a frontend: renders a projection of `CombatState` and the
   event stream, and submits intents. It never mutates combat state directly.
   The projection is rebuildable from state at any time (today: rebuilt on
@@ -100,19 +111,52 @@ printer is a second frontend riding the same event stream as the UI.
 
 ## Ruling 5 — Multiplayer is a constraint, not a feature (yet)
 
-No networking is built now. But the vocabulary is shaped so networking doesn't
-require redesign:
+No networking is built now. The target model is **lockstep over host-approved
+actions**, and the vocabulary is shaped so it doesn't require redesign:
+
+- **Two channels, one topology.** An intent channel (players → host) and an
+  action channel (host → everyone, including the host's own loopback). Each
+  is a network port or an in-memory queue — single player is the in-memory
+  case, and local play rides the same path as network play.
+- **The host validates; everyone processes.** The host listens on the intent
+  channel, `validate`s, and broadcasts approved actions. Engines never act on
+  raw intents — only on approved actions from the action channel. Every
+  engine expands the machinery cascade *locally* via `process`, so the wire
+  stays thin (one approved action per intent; derived events never cross it).
+- **Rejection is a notice**, host → rejectee only.
+
+Determinism invariants (the lockstep premise; broadcast seeds once at start):
+
+1. **Pin the RNG algorithm** when multiplayer ships (`ChaCha8Rng` or similar,
+   stable across `rand` versions and platforms).
+2. **Floating point is fine** — IEEE-754 basic operations are deterministic
+   (same inputs, same sequence, same result). What rules math must avoid is
+   transcendental functions (`sin`, `pow`, `exp`, ...), which are not
+   specified bit-exactly and differ across platform libms.
+3. **Iteration order must not affect outcomes.** Keyed access on hashed
+   containers is always fine. `HashMap`'s default `RandomState` is seeded
+   per process, so iteration order varies even across local runs —
+   order-sensitive iteration sorts or uses `BTreeMap`.
+4. **Approved actions are the only external input** — no wall-clock, no
+   external reads in the core (Ruling 1).
+
+Accepted tradeoff: **no hidden information.** Every engine simulates
+everything, so hands and deck orders are knowable by every client — fine for
+co-op with friends (and unenforceable with modded clients anyway).
+
+Desync tripwire: any engine may re-`validate` an approved action; a failure
+means bug or desync — fail loud.
 
 - **Turns are concurrent; there is no turn order among players.** During a
   shared turn, every player may play cards at any time. A turn ends when
   *all* players have chosen to end it; ending is per-player and locks that
   player out of further plays until the next turn. The core tracks who has
-  ended; the round machinery (enemy turn, draws) resolves inside the `step`
+  ended; the round machinery (enemy turn, draws) resolves inside the action
   that completes the set.
 - **Concurrent resolution order is decided by the host.** Simultaneous card
-  plays are sequenced by the host's driver (arrival order); the host's event
-  stream is the single truth every client projects. Resolution order is
-  therefore deterministic and replayable.
+  plays are sequenced by the host's intent channel (arrival order); the
+  host's approved-action stream is the single truth every engine processes.
+  Resolution order is therefore deterministic and replayable.
 - **A connection controls a set of players** (common case: one). Identity
   travels in the intent payload as `actor`, because one connection may
   legitimately speak for several local players (couch co-op over the internet).
@@ -120,8 +164,8 @@ require redesign:
   When it does, a server validating `actor ∈ connection's players` is a
   fail-loud bug tripwire, not a security boundary — we write both ends.
 - The game remains single-player; only the vocabulary admits that players
-  exist. `step` rejects plays from a player who has ended their turn
-  (`IntentRejected`), which single-player never triggers mid-turn.
+  exist. An action from a player who has ended their turn fails `validate`
+  (`AlreadyEndedTurn`), which single-player never triggers mid-turn.
 
 ## Explicitly deferred
 
