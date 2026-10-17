@@ -206,6 +206,10 @@ impl CombatState {
     /// HP is copied in, each player's deck is shuffled in, opening hands are
     /// drawn. Deterministic per seed. (StdRng's algorithm may change across
     /// `rand` versions; for replays stable across builds, pin a ChaCha*Rng.)
+    ///
+    /// Multiplayer: this is the only way to construct a combat, and every
+    /// engine calls it with identical broadcast inputs (run states, enemy
+    /// defs, seed). No other construction path may exist.
     pub fn start(
         players: &[PlayerRunState],
         enemies: &[EnemyDef],
@@ -285,6 +289,9 @@ impl CombatState {
     /// as events, in order. Callers must have validated the action (the host
     /// did, before broadcasting); a failure here in a receiving engine means
     /// bug or desync, so it is a debug assertion, not a rejection.
+    ///
+    /// Multiplayer: every engine runs this on the same approved-action
+    /// stream and must derive identical state and events (lockstep).
     pub fn process(&mut self, action: StampedIntent) -> Vec<Event> {
         debug_assert!(
             self.validate(action).is_ok(),

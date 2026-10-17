@@ -14,7 +14,15 @@ use crate::AppState;
 #[derive(Resource)]
 pub struct Combat(pub CombatState);
 
-/// Player intents awaiting application. One drain point: `drain_intents`.
+/// Player intents awaiting validation — the *intent channel* (COMBAT.md
+/// Ruling 5). Today: an in-memory queue fed by the local UI. In multiplayer
+/// the host's queue is fed by every connection, and each guest's UI submits
+/// over the network instead; submission code is unchanged.
+///
+/// MULTIPLAYER SEAM: entries are bare `Intent`s with no source. Couch co-op
+/// (one connection, several local players) will need the submitting seat
+/// attached at submission time, so the host can stamp the right actor.
+/// One drain point: `drain_intents`.
 #[derive(Resource, Default)]
 pub struct IntentQueue(VecDeque<Intent>);
 
@@ -30,6 +38,10 @@ impl IntentQueue {
 
 /// Events emitted by the core, awaiting frontend consumption.
 /// One drain point: each frontend drains what it needs.
+///
+/// Under lockstep (Ruling 5) events never cross the network: every engine
+/// derives its own identical stream from the approved-action channel, and
+/// each frontend consumes its local engine's stream.
 #[derive(Resource, Default)]
 pub struct PendingEvents(Vec<Event>);
 
@@ -89,6 +101,10 @@ fn seed_from_time() -> u64 {
 }
 
 fn setup_combat(mut commands: Commands, mut pending: ResMut<PendingEvents>) {
+    // MULTIPLAYER HOOK — combat start handshake: the host decides the
+    // participants' run states, the enemy defs, and the seed, and broadcasts
+    // them; every engine then constructs CombatState::start identically.
+    // Today the local app is the host and decides alone.
     let (state, events) = alchemy_combat::starter_combat(seed_from_time());
     pending.push_all(events);
     commands.insert_resource(Combat(state));
@@ -106,9 +122,22 @@ fn teardown_combat(
     notices.clear();
 }
 
-/// The single intent drain: stamps the local player identity, validates,
-/// and processes. This is the host's loopback of the action channel —
-/// network play swaps the transport, not the path.
+/// The single intent drain — the host role (COMBAT.md Ruling 5).
+///
+/// MULTIPLAYER HOOKS, in order of the pipeline below:
+/// 1. COLLECTION: intents arrive from every connection, not just the local
+///    UI. Arrival order here *is* the host-decided resolution order.
+/// 2. STAMPING: `actor` comes from the connection's controlled player set
+///    (lobby assignment), not the `LOCAL_PLAYER` constant.
+/// 3. BROADCAST: the loopback below — the host's engine processing its own
+///    approved action — becomes "broadcast the action; every engine
+///    `process`es it identically" (lockstep).
+/// 4. REJECTIONS route back to the submitter's connection only.
+///
+/// Note this function currently plays two roles that multiplayer splits
+/// apart: host policy (steps 1–2, validation, ordering) and engine
+/// subscription (step 3's `process` + event fan-out). The seam is visible
+/// but not yet a named boundary — split it when networking lands.
 fn drain_intents(
     combat: Option<ResMut<Combat>>,
     mut queue: ResMut<IntentQueue>,
@@ -124,7 +153,9 @@ fn drain_intents(
             intent,
         };
         match combat.0.validate(action) {
+            // 3. LOOPBACK: every engine processes the approved action.
             Ok(()) => pending.push_all(combat.0.process(action)),
+            // 4. Rejection: notice to the submitter only, never an event.
             Err(reason) => notices.0.push(Rejection { intent, reason }),
         }
     }

@@ -263,6 +263,8 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, local: &CombatPlayer) {
             })
             .with_children(|hand| {
                 for (index, card) in local.hand.iter().enumerate() {
+                    // Intent submission: multiplayer sends this over the
+                    // intent channel to the host; the UI knows no difference.
                     hand.spawn((
                         card_button(&card.def.name, card.def.cost),
                         observe(
