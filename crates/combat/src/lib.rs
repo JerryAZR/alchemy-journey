@@ -51,17 +51,20 @@ pub enum RejectReason {
     NotEnoughEnergy,
 }
 
-/// Everything that happened as a consequence of a `step` call, in order.
-/// Action echoes carry the actor; per-player machinery carries the player
-/// it happened to; shared machinery carries no identity.
+/// Everything that happened as a consequence of processing an approved
+/// action, in order. Action echoes carry the actor; per-player machinery
+/// carries the player it happened to; shared machinery carries no identity.
+///
+/// This stream contains only things that *happened* — rejections are
+/// host-side notices, never events (COMBAT.md Ruling 3).
 ///
 /// Note: this stream is currently omniscient (e.g. `CardDrawn` reveals the
-/// card). Per-player event visibility for multiplayer clients is deferred.
+/// card). Under lockstep that is inherent — every engine simulates
+/// everything (Ruling 5, accepted tradeoff).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     CombatBegan,
     CardPlayed { actor: PlayerId, card: Card },
-    IntentRejected { actor: PlayerId, intent: Intent, reason: RejectReason },
     TurnEnded { actor: PlayerId },
     HandDiscarded { player: PlayerId, count: usize },
     EnemyTurnPassed { enemy: String },
@@ -248,24 +251,56 @@ impl CombatState {
         self.players.iter().find(|p| p.id == id)
     }
 
-    /// The only input door (COMBAT.md Ruling 3). Accepts user actions,
-    /// resolves all machinery synchronously, and returns every consequence
-    /// as events, in order. Rejection is an event, never a return value.
-    pub fn step(&mut self, stamped: StampedIntent) -> Vec<Event> {
-        let mut events = Vec::new();
-        let Some(index) = self.players.iter().position(|p| p.id == stamped.actor) else {
-            events.push(Event::IntentRejected {
-                actor: stamped.actor,
-                intent: stamped.intent,
-                reason: RejectReason::UnknownPlayer,
-            });
-            return events;
+    /// The host gate (COMBAT.md Ruling 3): a read-only legality check.
+    /// Engines never process actions that haven't passed this.
+    pub fn validate(&self, action: StampedIntent) -> Result<(), RejectReason> {
+        let Some(player) = self.player(action.actor) else {
+            return Err(RejectReason::UnknownPlayer);
         };
-        match stamped.intent {
+        match action.intent {
             Intent::PlayCard { hand_index } => {
-                self.resolve_play_card(stamped.actor, index, hand_index, &mut events);
+                if player.has_ended_turn {
+                    return Err(RejectReason::AlreadyEndedTurn);
+                }
+                let Some(card) = player.hand.get(hand_index) else {
+                    return Err(RejectReason::InvalidHandIndex);
+                };
+                if player.energy < card.def.cost {
+                    return Err(RejectReason::NotEnoughEnergy);
+                }
+                Ok(())
             }
-            Intent::EndTurn => self.resolve_end_turn(stamped.actor, index, &mut events),
+            Intent::EndTurn => {
+                if player.has_ended_turn {
+                    Err(RejectReason::AlreadyEndedTurn)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// The engine's one input door: processes an *approved* action,
+    /// resolving all machinery synchronously and returning every consequence
+    /// as events, in order. Callers must have validated the action (the host
+    /// did, before broadcasting); a failure here in a receiving engine means
+    /// bug or desync, so it is a debug assertion, not a rejection.
+    pub fn process(&mut self, action: StampedIntent) -> Vec<Event> {
+        debug_assert!(
+            self.validate(action).is_ok(),
+            "process called with an illegal action: {action:?}"
+        );
+        let mut events = Vec::new();
+        let index = self
+            .players
+            .iter()
+            .position(|p| p.id == action.actor)
+            .expect("validated action has a known actor");
+        match action.intent {
+            Intent::PlayCard { hand_index } => {
+                self.resolve_play_card(action.actor, index, hand_index, &mut events);
+            }
+            Intent::EndTurn => self.resolve_end_turn(action.actor, index, &mut events),
         }
         events
     }
@@ -277,26 +312,6 @@ impl CombatState {
         hand_index: usize,
         events: &mut Vec<Event>,
     ) {
-        let reject = |events: &mut Vec<Event>, reason| {
-            events.push(Event::IntentRejected {
-                actor,
-                intent: Intent::PlayCard { hand_index },
-                reason,
-            });
-        };
-        let player = &self.players[player_index];
-        if player.has_ended_turn {
-            reject(events, RejectReason::AlreadyEndedTurn);
-            return;
-        }
-        let Some(card) = player.hand.get(hand_index) else {
-            reject(events, RejectReason::InvalidHandIndex);
-            return;
-        };
-        if player.energy < card.def.cost {
-            reject(events, RejectReason::NotEnoughEnergy);
-            return;
-        }
         let player = &mut self.players[player_index];
         let card = player.hand.remove(hand_index);
         player.energy -= card.def.cost;
@@ -313,15 +328,8 @@ impl CombatState {
 
     /// A player asks to end their turn. The round cascade runs only once
     /// every player has ended (concurrent turns — COMBAT.md Ruling 5).
+    /// Legality (not already ended) is established by `validate`.
     fn resolve_end_turn(&mut self, actor: PlayerId, player_index: usize, events: &mut Vec<Event>) {
-        if self.players[player_index].has_ended_turn {
-            events.push(Event::IntentRejected {
-                actor,
-                intent: Intent::EndTurn,
-                reason: RejectReason::AlreadyEndedTurn,
-            });
-            return;
-        }
         self.players[player_index].has_ended_turn = true;
         events.push(Event::TurnEnded { actor });
 

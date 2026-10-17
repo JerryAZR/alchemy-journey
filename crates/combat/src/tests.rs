@@ -48,14 +48,32 @@ fn coop_combat() -> CombatState {
 }
 
 fn play(state: &mut CombatState, actor: PlayerId, hand_index: usize) -> Vec<Event> {
-    state.step(StampedIntent {
+    let action = StampedIntent {
+        actor,
+        intent: Intent::PlayCard { hand_index },
+    };
+    state.validate(action).expect("test plays only legal actions");
+    state.process(action)
+}
+
+fn end_turn(state: &mut CombatState, actor: PlayerId) -> Vec<Event> {
+    let action = StampedIntent {
+        actor,
+        intent: Intent::EndTurn,
+    };
+    state.validate(action).expect("test ends only legally");
+    state.process(action)
+}
+
+fn validate_play(state: &CombatState, actor: PlayerId, hand_index: usize) -> Result<(), RejectReason> {
+    state.validate(StampedIntent {
         actor,
         intent: Intent::PlayCard { hand_index },
     })
 }
 
-fn end_turn(state: &mut CombatState, actor: PlayerId) -> Vec<Event> {
-    state.step(StampedIntent {
+fn validate_end_turn(state: &CombatState, actor: PlayerId) -> Result<(), RejectReason> {
+    state.validate(StampedIntent {
         actor,
         intent: Intent::EndTurn,
     })
@@ -65,7 +83,6 @@ fn event_kind(event: &Event) -> &'static str {
     match event {
         Event::CombatBegan => "CombatBegan",
         Event::CardPlayed { .. } => "CardPlayed",
-        Event::IntentRejected { .. } => "IntentRejected",
         Event::TurnEnded { .. } => "TurnEnded",
         Event::HandDiscarded { .. } => "HandDiscarded",
         Event::EnemyTurnPassed { .. } => "EnemyTurnPassed",
@@ -114,36 +131,29 @@ fn playing_a_reusable_card_sends_it_to_discard() {
 }
 
 #[test]
-fn illegal_intents_are_rejected_as_events() {
+fn illegal_intents_fail_validation() {
     let mut s = starter_with((0..11).map(|i| reusable_card(i, 1)).collect());
-    let events = play(&mut s, LOCAL_PLAYER, 99);
-    assert!(matches!(
-        events.as_slice(),
-        [Event::IntentRejected { reason: RejectReason::InvalidHandIndex, .. }]
-    ));
+    assert_eq!(
+        validate_play(&s, LOCAL_PLAYER, 99),
+        Err(RejectReason::InvalidHandIndex)
+    );
     // 3 energy, cards cost 1: three plays succeed, the fourth is rejected.
     for _ in 0..3 {
         assert!(matches!(play(&mut s, LOCAL_PLAYER, 0).as_slice(), [Event::CardPlayed { .. }]));
     }
-    let events = play(&mut s, LOCAL_PLAYER, 0);
-    assert!(matches!(
-        events.as_slice(),
-        [Event::IntentRejected { reason: RejectReason::NotEnoughEnergy, .. }]
-    ));
+    assert_eq!(
+        validate_play(&s, LOCAL_PLAYER, 0),
+        Err(RejectReason::NotEnoughEnergy)
+    );
 }
 
 #[test]
-fn intents_from_unknown_players_are_rejected() {
-    let (mut s, _) = starter_combat(42);
-    let events = end_turn(&mut s, PlayerId(99));
-    assert!(matches!(
-        events.as_slice(),
-        [Event::IntentRejected {
-            actor: PlayerId(99),
-            reason: RejectReason::UnknownPlayer,
-            ..
-        }]
-    ));
+fn intents_from_unknown_players_fail_validation() {
+    let (s, _) = starter_combat(42);
+    assert_eq!(
+        validate_end_turn(&s, PlayerId(99)),
+        Err(RejectReason::UnknownPlayer)
+    );
     assert_eq!(s.turn, 1);
 }
 
@@ -238,11 +248,10 @@ fn the_round_advances_only_when_all_players_have_ended() {
     assert!(matches!(play(&mut s, PlayerId(1), 0).as_slice(), [Event::CardPlayed { .. }]));
 
     // Player 0 is locked out until the next turn.
-    let events = play(&mut s, PlayerId(0), 0);
-    assert!(matches!(
-        events.as_slice(),
-        [Event::IntentRejected { reason: RejectReason::AlreadyEndedTurn, .. }]
-    ));
+    assert_eq!(
+        validate_play(&s, PlayerId(0), 0),
+        Err(RejectReason::AlreadyEndedTurn)
+    );
 
     // Player 1 ends: the round cascade runs — three enemies pass, both
     // players reset and redraw, flags clear.
@@ -275,4 +284,47 @@ fn piles_are_per_player() {
 
 fn event_kinds(events: &[Event]) -> Vec<&'static str> {
     events.iter().map(event_kind).collect()
+}
+
+/// The lockstep premise (COMBAT.md Ruling 5): two engines given the same
+/// seed and the same approved-action stream derive identical event streams
+/// and identical state.
+#[test]
+fn two_engines_stay_in_lockstep() {
+    let (mut host, host_start) = starter_combat(7);
+    let (mut guest, guest_start) = starter_combat(7);
+    assert_eq!(host_start, guest_start);
+
+    // One approved-action stream, broadcast to both engines.
+    let script: [StampedIntent; 8] = [
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 0 } },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 2 } },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 4 } },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 1 } },
+        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
+    ];
+    for action in script {
+        // Both engines validate (desync tripwire) and process.
+        assert_eq!(host.validate(action), guest.validate(action));
+        assert!(host.validate(action).is_ok());
+        assert_eq!(host.process(action), guest.process(action));
+    }
+
+    // Identical event streams imply identical state; spot-check the state.
+    let snapshot = |s: &CombatState| {
+        let p = s.player(LOCAL_PLAYER).unwrap();
+        let ids = |pile: &[Card]| pile.iter().map(|c| c.id).collect::<Vec<_>>();
+        (
+            s.turn,
+            p.energy,
+            ids(&p.hand),
+            ids(&p.deck),
+            ids(&p.discard),
+            ids(&p.consumed),
+        )
+    };
+    assert_eq!(snapshot(&host), snapshot(&guest));
 }

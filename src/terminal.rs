@@ -6,7 +6,7 @@ use alchemy_combat::{Event, Intent, OnPlay, RejectReason};
 use bevy::prelude::*;
 
 use crate::AppState;
-use crate::driver::PendingEvents;
+use crate::driver::{PendingEvents, PendingNotices, Rejection};
 
 pub struct TerminalPlugin;
 
@@ -16,10 +16,28 @@ impl Plugin for TerminalPlugin {
     }
 }
 
-fn print_events(mut pending: ResMut<PendingEvents>) {
+fn print_events(mut pending: ResMut<PendingEvents>, mut notices: ResMut<PendingNotices>) {
     for event in pending.drain() {
         println!("[combat] {}", render_event(&event));
     }
+    for notice in notices.drain() {
+        println!("[combat] {}", render_rejection(&notice));
+    }
+}
+
+/// Renders a rejection notice (host-side, submitter-only — never an event).
+fn render_rejection(notice: &Rejection) -> String {
+    let what = match notice.intent {
+        Intent::PlayCard { hand_index } => format!("play card at hand index {hand_index}"),
+        Intent::EndTurn => "end turn".to_string(),
+    };
+    let why = match notice.reason {
+        RejectReason::UnknownPlayer => "unknown player",
+        RejectReason::AlreadyEndedTurn => "already ended turn",
+        RejectReason::InvalidHandIndex => "no card at that hand index",
+        RejectReason::NotEnoughEnergy => "not enough energy",
+    };
+    format!("Rejected: cannot {what} ({why}).")
 }
 
 /// The one home for event-to-text rendering.
@@ -35,19 +53,6 @@ fn render_event(event: &Event) -> String {
             OnPlay::Consume => format!("Played {} (consumed).", card.def.name),
             OnPlay::Reusable => format!("Played {}.", card.def.name),
         },
-        Event::IntentRejected { intent, reason, .. } => {
-            let what = match intent {
-                Intent::PlayCard { hand_index } => format!("play card at hand index {hand_index}"),
-                Intent::EndTurn => "end turn".to_string(),
-            };
-            let why = match reason {
-                RejectReason::UnknownPlayer => "unknown player",
-                RejectReason::AlreadyEndedTurn => "already ended turn",
-                RejectReason::InvalidHandIndex => "no card at that hand index",
-                RejectReason::NotEnoughEnergy => "not enough energy",
-            };
-            format!("Rejected: cannot {what} ({why}).")
-        }
         Event::TurnEnded { .. } => "Player ends turn.".to_string(),
         Event::HandDiscarded { count, .. } => format!("Discarded {count} card(s)."),
         Event::EnemyTurnPassed { enemy } => format!("{enemy} does nothing."),

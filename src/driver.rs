@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use alchemy_combat::{CombatState, Event, Intent, LOCAL_PLAYER, StampedIntent};
+use alchemy_combat::{CombatState, Event, Intent, LOCAL_PLAYER, RejectReason, StampedIntent};
 use bevy::prelude::*;
 
 use crate::AppState;
@@ -47,12 +47,34 @@ impl PendingEvents {
     }
 }
 
+/// A rejected intent — a notice to the submitter, never part of the
+/// canonical event stream (COMBAT.md Ruling 3).
+pub struct Rejection {
+    pub intent: Intent,
+    pub reason: RejectReason,
+}
+
+/// Rejection notices awaiting frontend consumption.
+#[derive(Resource, Default)]
+pub struct PendingNotices(Vec<Rejection>);
+
+impl PendingNotices {
+    pub fn drain(&mut self) -> std::vec::Drain<'_, Rejection> {
+        self.0.drain(..)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 pub struct DriverPlugin;
 
 impl Plugin for DriverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<IntentQueue>()
             .init_resource::<PendingEvents>()
+            .init_resource::<PendingNotices>()
             .add_systems(OnEnter(AppState::Combat), setup_combat)
             .add_systems(OnExit(AppState::Combat), teardown_combat)
             .add_systems(Update, drain_intents.run_if(in_state(AppState::Combat)));
@@ -76,28 +98,34 @@ fn teardown_combat(
     mut commands: Commands,
     mut queue: ResMut<IntentQueue>,
     mut pending: ResMut<PendingEvents>,
+    mut notices: ResMut<PendingNotices>,
 ) {
     commands.remove_resource::<Combat>();
     queue.clear();
     pending.clear();
+    notices.clear();
 }
 
-/// The single intent drain: stamps the local player identity and steps the
-/// core. Events flow into the pending buffer for frontends.
+/// The single intent drain: stamps the local player identity, validates,
+/// and processes. This is the host's loopback of the action channel —
+/// network play swaps the transport, not the path.
 fn drain_intents(
     combat: Option<ResMut<Combat>>,
     mut queue: ResMut<IntentQueue>,
     mut pending: ResMut<PendingEvents>,
+    mut notices: ResMut<PendingNotices>,
 ) {
     let Some(mut combat) = combat else {
         return;
     };
     while let Some(intent) = queue.0.pop_front() {
-        let stamped = StampedIntent {
+        let action = StampedIntent {
             actor: LOCAL_PLAYER,
             intent,
         };
-        let events = combat.0.step(stamped);
-        pending.push_all(events);
+        match combat.0.validate(action) {
+            Ok(()) => pending.push_all(combat.0.process(action)),
+            Err(reason) => notices.0.push(Rejection { intent, reason }),
+        }
     }
 }
