@@ -40,9 +40,18 @@ fn coop_combat() -> CombatState {
         run_player(PlayerId(1), (11..22).map(|i| reusable_card(i, 0)).collect()),
     ];
     let enemies = [
-        EnemyDef { name: "Rat".to_string(), hp: 10 },
-        EnemyDef { name: "Bat".to_string(), hp: 10 },
-        EnemyDef { name: "Slime".to_string(), hp: 10 },
+        EnemyDef {
+            name: "Rat".to_string(),
+            hp: 10,
+        },
+        EnemyDef {
+            name: "Bat".to_string(),
+            hp: 10,
+        },
+        EnemyDef {
+            name: "Slime".to_string(),
+            hp: 10,
+        },
     ];
     CombatState::start(&players, &enemies, 42).0
 }
@@ -52,7 +61,9 @@ fn play(state: &mut CombatState, actor: PlayerId, hand_index: usize) -> Vec<Even
         actor,
         intent: Intent::PlayCard { hand_index },
     };
-    state.validate(action).expect("test plays only legal actions");
+    state
+        .validate(action)
+        .expect("test plays only legal actions");
     state.process(action)
 }
 
@@ -65,7 +76,11 @@ fn end_turn(state: &mut CombatState, actor: PlayerId) -> Vec<Event> {
     state.process(action)
 }
 
-fn validate_play(state: &CombatState, actor: PlayerId, hand_index: usize) -> Result<(), RejectReason> {
+fn validate_play(
+    state: &CombatState,
+    actor: PlayerId,
+    hand_index: usize,
+) -> Result<(), RejectReason> {
     state.validate(StampedIntent {
         actor,
         intent: Intent::PlayCard { hand_index },
@@ -104,7 +119,10 @@ fn combat_start_copies_run_state_in() {
     assert_eq!(player.deck.len(), 11 - HAND_SIZE);
     assert_eq!(player.total_cards(), 11);
     assert_eq!(
-        events.iter().filter(|e| matches!(e, Event::CardDrawn { .. })).count(),
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::CardDrawn { .. }))
+            .count(),
         HAND_SIZE
     );
 }
@@ -139,7 +157,10 @@ fn illegal_intents_fail_validation() {
     );
     // 3 energy, cards cost 1: three plays succeed, the fourth is rejected.
     for _ in 0..3 {
-        assert!(matches!(play(&mut s, LOCAL_PLAYER, 0).as_slice(), [Event::CardPlayed { .. }]));
+        assert!(matches!(
+            play(&mut s, LOCAL_PLAYER, 0).as_slice(),
+            [Event::CardPlayed { .. }]
+        ));
     }
     assert_eq!(
         validate_play(&s, LOCAL_PLAYER, 0),
@@ -193,8 +214,11 @@ fn reshuffle_happens_mid_draw_and_the_event_stream_proves_it() {
     let kinds: Vec<&'static str> = events.iter().map(event_kind).collect();
     let pos = |k| kinds.iter().position(|x| *x == k).unwrap();
     assert!(pos("DeckReshuffled") > pos("CardDrawn"));
-    let draws_after =
-        kinds.iter().skip(pos("DeckReshuffled")).filter(|k| **k == "CardDrawn").count();
+    let draws_after = kinds
+        .iter()
+        .skip(pos("DeckReshuffled"))
+        .filter(|k| **k == "CardDrawn")
+        .count();
     assert_eq!(draws_after, 4);
     let player = s.player(LOCAL_PLAYER).unwrap();
     assert_eq!(player.hand.len(), 5);
@@ -245,7 +269,10 @@ fn the_round_advances_only_when_all_players_have_ended() {
     assert!(!s.player(PlayerId(1)).unwrap().has_ended_turn);
 
     // Player 1 can still act while player 0 has ended.
-    assert!(matches!(play(&mut s, PlayerId(1), 0).as_slice(), [Event::CardPlayed { .. }]));
+    assert!(matches!(
+        play(&mut s, PlayerId(1), 0).as_slice(),
+        [Event::CardPlayed { .. }]
+    ));
 
     // Player 0 is locked out until the next turn.
     assert_eq!(
@@ -297,14 +324,38 @@ fn two_engines_stay_in_lockstep() {
 
     // One approved-action stream, broadcast to both engines.
     let script: [StampedIntent; 8] = [
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 0 } },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 2 } },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 4 } },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::PlayCard { hand_index: 1 } },
-        StampedIntent { actor: LOCAL_PLAYER, intent: Intent::EndTurn },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::PlayCard { hand_index: 0 },
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::PlayCard { hand_index: 2 },
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::EndTurn,
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::PlayCard { hand_index: 4 },
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::EndTurn,
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::EndTurn,
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::PlayCard { hand_index: 1 },
+        },
+        StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent: Intent::EndTurn,
+        },
     ];
     for action in script {
         // Both engines validate (desync tripwire) and process.

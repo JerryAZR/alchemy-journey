@@ -267,11 +267,9 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, local: &CombatPlayer) {
                     // intent channel to the host; the UI knows no difference.
                     hand.spawn((
                         card_button(&card.def.name, card.def.cost),
-                        observe(
-                            move |_: On<Activate>, mut queue: ResMut<IntentQueue>| {
-                                queue.submit(Intent::PlayCard { hand_index: index });
-                            },
-                        ),
+                        observe(move |_: On<Activate>, mut queue: ResMut<IntentQueue>| {
+                            queue.submit(Intent::PlayCard { hand_index: index });
+                        }),
                     ));
                 }
             });

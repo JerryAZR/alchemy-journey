@@ -11,9 +11,9 @@
 //!   at end (writeback arrives with combat termination in step 2).
 //! - Tier 3, transient combat state: [`CombatPlayer`], [`CombatState`].
 
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 pub const HAND_SIZE: usize = 5;
 pub const ENERGY_PER_TURN: u32 = 3;
@@ -351,7 +351,7 @@ impl CombatState {
     }
 
     /// 2. Player turn-end: discard hands. (Step 4: end-of-turn player
-    /// statuses tick here.)
+    ///    statuses tick here.)
     fn player_turn_end(&mut self, events: &mut Vec<Event>) {
         for player in &mut self.players {
             let held = std::mem::take(&mut player.hand);
@@ -385,8 +385,8 @@ impl CombatState {
     }
 
     /// 6. Player turn-start: announce, reset energy and end-turn flags,
-    /// draw. Also runs for turn 1 at combat start. (Step 4: start-of-turn
-    /// player statuses tick here.)
+    ///    draw. Also runs for turn 1 at combat start. (Step 4: start-of-turn
+    ///    player statuses tick here.)
     fn begin_player_turn(&mut self, events: &mut Vec<Event>) {
         events.push(Event::TurnBegan { turn: self.turn });
         for index in 0..self.players.len() {
