@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use alchemy_combat::{CombatState, Event, Intent, StampedIntent};
+use alchemy_combat::{CombatState, Event, Intent, LOCAL_PLAYER, StampedIntent};
 use bevy::prelude::*;
 
 use crate::AppState;
@@ -92,9 +92,12 @@ fn drain_intents(
     let Some(mut combat) = combat else {
         return;
     };
-    let actor = combat.0.player_id();
     while let Some(intent) = queue.0.pop_front() {
-        let events = combat.0.step(StampedIntent { actor, intent });
+        let stamped = StampedIntent {
+            actor: LOCAL_PLAYER,
+            intent,
+        };
+        let events = combat.0.step(stamped);
         pending.push_all(events);
     }
 }

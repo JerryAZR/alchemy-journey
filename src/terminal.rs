@@ -27,8 +27,8 @@ fn render_event(event: &Event) -> String {
     match event {
         Event::CombatBegan => "Combat begins.".to_string(),
         Event::TurnBegan { turn } => format!("Turn {turn} begins."),
-        Event::CardDrawn { card } => format!("Drew {} #{}.", card.def.name, card.id),
-        Event::DeckReshuffled { count } => {
+        Event::CardDrawn { card, .. } => format!("Drew {} #{}.", card.def.name, card.id),
+        Event::DeckReshuffled { count, .. } => {
             format!("Deck empty — shuffled {count} discarded card(s) into the deck.")
         }
         Event::CardPlayed { card, .. } => match card.def.on_play {
@@ -42,13 +42,14 @@ fn render_event(event: &Event) -> String {
             };
             let why = match reason {
                 RejectReason::UnknownPlayer => "unknown player",
+                RejectReason::AlreadyEndedTurn => "already ended turn",
                 RejectReason::InvalidHandIndex => "no card at that hand index",
                 RejectReason::NotEnoughEnergy => "not enough energy",
             };
             format!("Rejected: cannot {what} ({why}).")
         }
         Event::TurnEnded { .. } => "Player ends turn.".to_string(),
-        Event::HandDiscarded { count } => format!("Discarded {count} card(s)."),
+        Event::HandDiscarded { count, .. } => format!("Discarded {count} card(s)."),
         Event::EnemyTurnPassed { enemy } => format!("{enemy} does nothing."),
     }
 }

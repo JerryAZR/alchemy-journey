@@ -1,7 +1,7 @@
 //! The UI frontend: renders a projection of [`CombatState`] and submits
 //! player intents. It never mutates combat state (COMBAT.md Ruling 4).
 
-use alchemy_combat::{CombatState, Intent, Phase, Unit};
+use alchemy_combat::{CombatPlayer, CombatState, Intent, LOCAL_PLAYER, Unit};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Pressed;
@@ -104,6 +104,9 @@ fn refresh_combat_ui(
 }
 
 fn spawn_combat_ui(commands: &mut Commands, state: &CombatState) {
+    let local = state
+        .player(LOCAL_PLAYER)
+        .expect("single-player combat always has the local player");
     commands
         .spawn((
             CombatUiRoot,
@@ -119,13 +122,13 @@ fn spawn_combat_ui(commands: &mut Commands, state: &CombatState) {
             BackgroundColor(Color::srgb(0.08, 0.08, 0.12)),
         ))
         .with_children(|parent| {
-            spawn_top_bar(parent, state);
+            spawn_top_bar(parent, state, local);
             spawn_arena(parent, state);
-            spawn_bottom_bar(parent, state);
+            spawn_bottom_bar(parent, local);
         });
 }
 
-fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
+fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState, local: &CombatPlayer) {
     parent
         .spawn(Node {
             width: percent(100),
@@ -135,12 +138,13 @@ fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
             ..default()
         })
         .with_children(|bar| {
-            let phase = match state.phase {
-                Phase::PlayerTurn => "Player Turn",
-                Phase::EnemyTurn => "Enemy Turn",
+            let status = if local.has_ended_turn {
+                "Turn ended"
+            } else {
+                "Your move"
             };
             bar.spawn(label(
-                format!("Turn {} — {phase}   Energy: {}", state.turn, state.energy),
+                format!("Turn {} — {status}   Energy: {}", state.turn, local.energy),
                 20.0,
                 Color::srgb(0.9, 0.9, 0.9),
             ));
@@ -154,9 +158,9 @@ fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
                 right.spawn(label(
                     format!(
                         "Deck {}  Discard {}  Consumed {}",
-                        state.deck.len(),
-                        state.discard.len(),
-                        state.consumed.len()
+                        local.deck.len(),
+                        local.discard.len(),
+                        local.consumed.len()
                     ),
                     16.0,
                     Color::srgb(0.7, 0.7, 0.7),
@@ -183,8 +187,28 @@ fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState) {
             ..default()
         })
         .with_children(|arena| {
-            spawn_unit_panel(arena, &state.player, Color::srgb(0.2, 0.35, 0.6));
-            spawn_unit_panel(arena, &state.enemy, Color::srgb(0.6, 0.25, 0.25));
+            arena
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(20),
+                    ..default()
+                })
+                .with_children(|side| {
+                    for player in &state.players {
+                        spawn_unit_panel(side, &player.unit, Color::srgb(0.2, 0.35, 0.6));
+                    }
+                });
+            arena
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(20),
+                    ..default()
+                })
+                .with_children(|side| {
+                    for enemy in &state.enemies {
+                        spawn_unit_panel(side, enemy, Color::srgb(0.6, 0.25, 0.25));
+                    }
+                });
         });
 }
 
@@ -221,7 +245,7 @@ fn spawn_unit_panel(parent: &mut ChildSpawnerCommands, unit: &Unit, color: Color
         });
 }
 
-fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
+fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, local: &CombatPlayer) {
     parent
         .spawn(Node {
             width: percent(100),
@@ -238,7 +262,7 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, state: &CombatState) {
                 ..default()
             })
             .with_children(|hand| {
-                for (index, card) in state.hand.iter().enumerate() {
+                for (index, card) in local.hand.iter().enumerate() {
                     hand.spawn((
                         card_button(&card.def.name, card.def.cost),
                         observe(
