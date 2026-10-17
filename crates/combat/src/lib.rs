@@ -238,10 +238,9 @@ impl CombatState {
             enemies,
             rng,
         };
-        let mut events = vec![Event::CombatBegan, Event::TurnBegan { turn: 1 }];
-        for index in 0..state.players.len() {
-            state.draw_to_hand_size(index, &mut events);
-        }
+        let mut events = vec![Event::CombatBegan];
+        // Combat starts by running the player turn-start phase for turn 1.
+        state.begin_player_turn(&mut events);
         (state, events)
     }
 
@@ -312,6 +311,8 @@ impl CombatState {
         }
     }
 
+    /// A player asks to end their turn. The round cascade runs only once
+    /// every player has ended (concurrent turns — COMBAT.md Ruling 5).
     fn resolve_end_turn(&mut self, actor: PlayerId, player_index: usize, events: &mut Vec<Event>) {
         if self.players[player_index].has_ended_turn {
             events.push(Event::IntentRejected {
@@ -324,26 +325,20 @@ impl CombatState {
         self.players[player_index].has_ended_turn = true;
         events.push(Event::TurnEnded { actor });
 
-        // Concurrent turns: the round advances only when every player has
-        // ended their turn.
-        if !self.players.iter().all(|p| p.has_ended_turn) {
+        // 1. The turn can only end if no player is still active.
+        if self.players.iter().any(|p| !p.has_ended_turn) {
             return;
         }
-
-        // Enemy turn. Step 3: each enemy executes its action graph here.
-        for enemy in &self.enemies {
-            events.push(Event::EnemyTurnPassed {
-                enemy: enemy.name.clone(),
-            });
-        }
-
+        self.player_turn_end(events);
+        self.enemy_turn(events);
         self.turn += 1;
-        events.push(Event::TurnBegan { turn: self.turn });
+        self.begin_player_turn(events);
+    }
 
-        for index in 0..self.players.len() {
-            let player = &mut self.players[index];
-            player.energy = ENERGY_PER_TURN;
-            player.has_ended_turn = false;
+    /// 2. Player turn-end: discard hands. (Step 4: end-of-turn player
+    /// statuses tick here.)
+    fn player_turn_end(&mut self, events: &mut Vec<Event>) {
+        for player in &mut self.players {
             let held = std::mem::take(&mut player.hand);
             let count = held.len();
             player.discard.extend(held);
@@ -353,6 +348,36 @@ impl CombatState {
                     count,
                 });
             }
+        }
+    }
+
+    /// 3–5. Enemy turn: turn-start events, then each enemy acts one by one,
+    /// then turn-end events. (Steps 3–4 fill the hooks; inert for now.)
+    fn enemy_turn(&mut self, events: &mut Vec<Event>) {
+        // 3. Enemy turn-start events: none yet.
+        for index in 0..self.enemies.len() {
+            // 4. Enemy actions, taken one by one.
+            self.enemy_action(index, events);
+        }
+        // 5. Enemy turn-end events: none yet.
+    }
+
+    /// Step 3 placeholder: execute one enemy's action graph.
+    fn enemy_action(&mut self, enemy_index: usize, events: &mut Vec<Event>) {
+        events.push(Event::EnemyTurnPassed {
+            enemy: self.enemies[enemy_index].name.clone(),
+        });
+    }
+
+    /// 6. Player turn-start: announce, reset energy and end-turn flags,
+    /// draw. Also runs for turn 1 at combat start. (Step 4: start-of-turn
+    /// player statuses tick here.)
+    fn begin_player_turn(&mut self, events: &mut Vec<Event>) {
+        events.push(Event::TurnBegan { turn: self.turn });
+        for index in 0..self.players.len() {
+            let player = &mut self.players[index];
+            player.energy = ENERGY_PER_TURN;
+            player.has_ended_turn = false;
             self.draw_to_hand_size(index, events);
         }
     }

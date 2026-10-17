@@ -156,9 +156,9 @@ fn end_turn_runs_the_full_round_synchronously() {
         kinds,
         [
             "TurnEnded",
+            "HandDiscarded",
             "EnemyTurnPassed",
             "TurnBegan",
-            "HandDiscarded",
             "CardDrawn",
             "CardDrawn",
             "CardDrawn",
