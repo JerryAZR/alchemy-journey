@@ -1,8 +1,9 @@
 //! Combat domain core. See COMBAT.md at the repository root for the rulings
 //! this crate enforces. In short: this crate owns all combat truth, depends
-//! on nothing Bevy, accepts only user actions through `step`, and reports
-//! every consequence as events. Resolution is synchronous and total; between
-//! `step` calls the state rests only at input boundaries.
+//! on nothing Bevy, accepts only user actions through its `validate` /
+//! `process` pair, and reports every consequence as events. Resolution is
+//! synchronous and total; between actions the state rests only at input
+//! boundaries.
 //!
 //! Data tiers (see the design discussion):
 //! - Tier 1, definitions: [`CardDef`], [`EnemyDef`] — static data.
@@ -81,7 +82,7 @@ pub enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnPlay {
     /// Returns to the discard pile, can be drawn again.
-    /// Unused until step 2, when the reusable toggle lands.
+    /// Used by tests; becomes real content in step 2 (reusable cards).
     #[allow(dead_code)]
     Reusable,
     /// Permanently removed from the deck when played (potions).
@@ -178,8 +179,9 @@ pub struct CombatPlayer {
     pub discard: Vec<Card>,
     pub consumed: Vec<Card>,
     /// Concurrent turns: set when this player ends their turn. The round
-    /// advances when all players have ended. (Step 2: only *living*
-    /// players count; death doesn't exist yet.)
+    /// advances when all players have ended. (Open question in DESIGN.md:
+    /// whether dead players are excluded — "all living players ended" is the
+    /// current lean; logic lands with damage, when death exists.)
     pub has_ended_turn: bool,
 }
 

@@ -1,6 +1,7 @@
 //! The app-layer driver (COMBAT.md Ruling 4): owns the combat state, the
 //! intent queue, and the pending-event buffer. Frontends submit bare
-//! `Intent`s; this layer stamps the local player identity and calls `step`.
+//! `Intent`s; this layer stamps the local player identity, validates, and
+//! processes approved actions.
 //! A future multiplayer server is a different driver over the same core.
 
 use std::collections::VecDeque;

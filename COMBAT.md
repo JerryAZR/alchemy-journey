@@ -35,14 +35,18 @@ enum Event {
     // Action echoes carry the actor:
     CardPlayed      { actor: PlayerId, /* card */ },
     TurnEnded       { actor: PlayerId },
-    IntentRejected  { actor: PlayerId, reason: RejectReason },
-    // Autonomous events carry no actor — no one "did" them:
+    // Per-player machinery carries the player it happened to:
+    HandDiscarded   { player: PlayerId, count: usize },
+    CardDrawn       { player: PlayerId, /* card */ },
+    DeckReshuffled  { player: PlayerId, count: usize },
+    // Shared machinery carries no identity:
+    CombatBegan,
     TurnBegan       { turn: u32 },
-    CardsDrawn      { /* ... */ },
-    DeckReshuffled  { count: usize },
-    PhaseChanged    { phase: Phase },
+    EnemyTurnPassed { /* enemy */ },
 }
 ```
+
+(The sketch above tracks the implementation; both evolve together.)
 
 Intents and events are plain data: indices, not pointers or entity IDs. They
 will derive `Serialize`/`Deserialize` when the wire exists, and not before.

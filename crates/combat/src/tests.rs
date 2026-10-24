@@ -1,6 +1,7 @@
-//! Tests for the combat core. Every interaction goes through `step`:
-//! these tests are also the proof that a full game can be driven
-//! programmatically with no UI and no test-side game state.
+//! Tests for the combat core. Every interaction goes through the
+//! `validate`/`process` door: these tests are also the proof that a full
+//! game can be driven programmatically with no UI and no test-side game
+//! state.
 
 use super::*;
 
