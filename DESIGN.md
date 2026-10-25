@@ -103,10 +103,18 @@ enum Instruction {
 2. Otherwise the atom hits the **chosen** target — the single optional
    target in `Intent::PlayCard { hand_index, target: Option<UnitRef> }`.
 
-- **No per-node built-in targets.** Retargeting costs slots (`BindTarget`),
-  keeping targeting expansion inside the slot economy: "pay 2 slots to give
-  this spell a self-shield rider" is a real tradeoff, like everything else
-  in wand building. Computed spell cost charges for it like any component.
+- **Targeting is bind-or-chosen for now.** Retargeting costs slots
+  (`BindTarget`), keeping targeting expansion inside the slot economy:
+  "pay 2 slots to give this spell a self-shield rider" is a real tradeoff,
+  like everything else in wand building. Computed spell cost charges for
+  it like any component.
+- **Per-node built-in targets are parked, not rejected.** A component with
+  a baked-in target trades *flexibility for slot efficiency* (e.g. "apply
+  a debuff to the caster, gain 1 energy": self-targeting is part of its
+  identity, no bind slot spent). That's a legitimate component-design
+  lever, kept as a candidate for when we want more strategic depth.
+  Adding it later is backward compatible: resolution gains a rule-0
+  built-in check above the two rules.
 - Binds resolve roles to concrete units **at application time** (mid-scan
   liveness applies); `AllX` expands to each living unit of the side in
   stable vector order.
@@ -125,10 +133,11 @@ enum Instruction {
   turn-level effects like retain); modifiers borrow from Noita. The concrete
   component catalog is a research task the owner will do — the engine must
   not hardcode a catalog.
-- **Slot pressure is the core tension of assembly.** Every expansion of what
-  a spell does — more effects, retargeting, multicast — competes for slots.
-  Features that make expansion free (e.g. per-node target fields) delete
-  tradeoffs and are rejected. Scarcity creates the decisions.
+- **Slot pressure is the core tension of assembly.** Every expansion of
+  what a spell does — more effects, retargeting, multicast — competes for
+  slots. Scarcity creates the decisions. (Mechanisms may *price* expansion
+  differently — e.g. built-in targets sell flexibility for slot
+  efficiency — but expansion is never free.)
 - Spell evaluation is the sequential scan described in the IR section:
   ordered component list, modifiers ride into the evaluator's registers,
   one cast per play.
