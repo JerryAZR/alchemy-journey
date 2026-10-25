@@ -41,7 +41,9 @@ AGENTS.md. History and rationale live in `devlog/`.
 ## Potions (step 2 builds the first of these)
 
 - Zero cost, flat effect list, effects apply in a **predefined order**, single
-  **target scope per potion**: `{ one unit | one side | everyone }`.
+  **target scope per potion**: `{ Caster | OneUnit | OneSide | Everyone }`
+  (`OneSide`/`Everyone` are deferred variants — no content needs them yet).
+  `OneUnit` means the player-chosen target; `Caster` means the drinker.
 - Per-potion scope means "give myself 10 shield, then deal 10 damage to an
   enemy" is **not** a valid potion — effects within one potion share one
   scope. Repeated atoms (`[Damage(N), Damage(N)]`) are structurally fine;
@@ -49,24 +51,71 @@ AGENTS.md. History and rationale live in `devlog/`.
 - Potion authoring invariants (flat, single scope, no modifiers, no triggers)
   are enforced at the **authoring layer**, not the executor. (Rust enforces
   memory safety in the language, not by running on a different CPU than C.)
+- Lowering is mechanical (`k` = the potion's atom count):
+  - `Scope::Caster`  → `[Eval(k), BindTarget(Caster), ...atoms]`
+  - `Scope::OneUnit` → `[Eval(k), ...atoms]` (atoms default to the chosen
+    target; validation requires one)
 
-## The effect IR (the decision that took the longest — do not re-litigate)
+## The effect IR and evaluator (settled — do not re-litigate)
 
-- **One IR, one tree-walking interpreter.** Spells and potions share the
-  atomic effect vocabulary and the executor.
-- **Two compilers, one executor:** potions lower mechanically from their
-  authoring type `{ scope, effects }` into the IR; spells compile from
-  sequential Noita-style evaluation into the same IR.
-- **The interpreter walks the tree against live combat state.** No batching,
-  no snapshot semantics: conditionals ("deal 3N; if target alive, deal N to
-  yourself") and liveness checks are evaluated mid-walk. "Deal N twice" is
-  two `Damage` atoms and is *not* "deal 2N."
-- The IR is an **open type that grows with features**. Step 2 adds only what
-  Strike/Defend need: atoms (Damage, Block), `Sequence`, and target binding
-  (`WithTarget`). Modifiers/multicast/triggers/conditionals are added when
-  spell assembly is designed, not before.
-- Spell effects will express a superset of potion effects: multiple effects,
-  multiple targets, mixed scopes.
+- **One IR, one executor.** Spells and potions share the atomic effect
+  vocabulary and the evaluator.
+- **Flat instruction vector + stateful sequential evaluator.** The editing
+  surface is a vector, so the IR mirrors the authoring model — no tree, no
+  compiler that reshapes one. The evaluator scans the vector against **live
+  combat state**: no batching, no snapshot semantics; liveness is checked
+  per atom application, mid-scan. "Deal N twice" is two `Damage` atoms and
+  is *not* "deal 2N."
+
+### Instructions (open types — they grow with features)
+
+```rust
+enum Atom { Damage(u32), Block(u32) }   // step 2 slice; more land with content
+
+enum TargetSpec { Caster, AllEnemies, AllAllies, Everyone }
+
+enum Instruction {
+    Eval(u32),                // this cast applies up to N atoms (default: 1)
+    BindTarget(TargetSpec),   // redirect following atoms until cleared/changed
+    ClearBind,                // return to the chosen-target default
+    Apply(Atom),              // apply one atom to the resolved target
+}
+```
+
+### Evaluation model: paused stepping (Noita-style, per-cast)
+
+- Playing a card runs **one cast**: the scan starts at the card's cursor and
+  applies atoms until N are applied (default 1; `Eval(N)` raises it for the
+  current cast), the vector ends, or the wrap budget is exhausted.
+- A cast is a **paused evaluation**: all eval state — cursor, pending
+  modifiers, active bind — lives on the card instance and persists until
+  combat end. After the last node the cursor wraps to 0 for the next cast.
+  (A stepping 6-7-8 damage card is three `Apply` nodes and nothing else.)
+- `unwrap: u8` on the card def, default 0: within one play — including any
+  future triggered sub-casts, which share the budget — the cursor may pass
+  slot 0 at most `unwrap` times. This kills free-cast infinite loops (a
+  lone "deal 10, then cast the next for free" node fizzles at budget end).
+- Run-persistence of eval state: out of scope (not hard, just undesigned).
+
+### Targeting: two-rule resolution
+
+1. An active bind governs.
+2. Otherwise the atom hits the **chosen** target — the single optional
+   target in `Intent::PlayCard { hand_index, target: Option<UnitRef> }`.
+
+- **No per-node built-in targets.** Retargeting costs slots (`BindTarget`),
+  keeping targeting expansion inside the slot economy: "pay 2 slots to give
+  this spell a self-shield rider" is a real tradeoff, like everything else
+  in wand building. Computed spell cost charges for it like any component.
+- Binds resolve roles to concrete units **at application time** (mid-scan
+  liveness applies); `AllX` expands to each living unit of the side in
+  stable vector order.
+- "Does the upcoming cast need a target?" is a pure query: simulate the
+  scan with the card's current registers; needs-chosen iff some atom would
+  apply while no bind is active. The UI builds the StS drag model on it
+  (target-cards drag onto a unit; others into the play region).
+- Validation is strict: a missing-when-needed target rejects, and a
+  supplied-but-unconsumed target rejects (silent drops hide UI bugs).
 
 ## Spell assembly (future — step 3+ of design, not scheduled)
 
@@ -76,9 +125,13 @@ AGENTS.md. History and rationale live in `devlog/`.
   turn-level effects like retain); modifiers borrow from Noita. The concrete
   component catalog is a research task the owner will do — the engine must
   not hardcode a catalog.
-- Spell evaluation is **sequential** (Noita-style): ordered component list,
-  modifiers wrap following effects, produces an effect tree for the
-  interpreter.
+- **Slot pressure is the core tension of assembly.** Every expansion of what
+  a spell does — more effects, retargeting, multicast — competes for slots.
+  Features that make expansion free (e.g. per-node target fields) delete
+  tradeoffs and are rejected. Scarcity creates the decisions.
+- Spell evaluation is the sequential scan described in the IR section:
+  ordered component list, modifiers ride into the evaluator's registers,
+  one cast per play.
 
 ## Methodology
 
@@ -97,11 +150,11 @@ AGENTS.md. History and rationale live in `devlog/`.
   tiers, concurrent-turn shape, lockstep vocabulary.~~
 - **Step 2 (next) — simple effects**: Strike/Defend-like cards (potions with
   the reusable toggle), damage, block, lethal damage, `CombatOver` terminal
-  state, win/loss exit. First IR slice: atoms + `Sequence` + `WithTarget` +
-  interpreter. Enemy still does nothing. The BSN adoption decision (from the
-  Bevy 0.20 feature evaluation): adopt opportunistically, starting with the
-  hand row as the spike at the next UI-heavy step; revert freely if it
-  fights you.
+  state, win/loss exit. First IR slice: the four instructions + the stepping
+  evaluator + per-card eval state, per the IR section. Enemy still does
+  nothing. The BSN adoption decision (from the Bevy 0.20 feature
+  evaluation): adopt opportunistically, starting with the hand row as the
+  spike at the next UI-heavy step; revert freely if it fights you.
 - Step 3 — enemy intent: data-driven per-enemy action patterns attached to
   `EnemyDef` (scripted sequences; not hand-written state machines).
 - Step 4 — buffs/debuffs, with and without duration; turn hooks in the
@@ -130,35 +183,30 @@ require reading history)
 - **For prototype playtesting, observability beats presentation**: event
   ordering and pile movements must be answerable from the terminal log.
 
-## Step-2 decisions pending the owner (found by a fresh-eyes doc review)
+## Step-2 decisions pending the owner
 
-The architecture docs fully constrain *how* step 2 plugs in; these *content*
-decisions are not yet made. The next agent must get owner rulings before
-implementing:
+The spell-casting mechanisms are settled (see the IR section). These
+*content/representation* decisions remain — discuss after the mechanisms
+land in code; the next agent must get owner rulings before implementing:
 
-1. **Targeting model & `Intent` shape.** Does `PlayCard` grow a target
-   field? Or does targeting use the `ChooseOption`-style decision point
-   (core rests awaiting a choice)? Or auto-target the only enemy while
-   there's exactly one? What is a target in the IR (enemy index? unit
-   identity? side?) — mind that removing dead enemies from the vec
-   invalidates indices mid-sequence.
-2. **`CombatOver` representation and post-terminal behavior.** Resting
+1. **`CombatOver` representation and post-terminal behavior.** Resting
    state (per the degenerate-state-machine lesson), event shape, and
    whether `validate` rejects everything afterwards (new `RejectReason`).
    App-side win/loss display and exit path.
-3. **Run-state writeback API** at combat end (HP back to `PlayerRunState`;
+2. **Run-state writeback API** at combat end (HP back to `PlayerRunState`;
    remove `consumed` card ids from the run deck — confirm that removal is
    in scope for step 2), and what HP-on-loss means with no run layer yet.
-4. **Is the loss path in scope when unreachable in play?** (Inert enemy,
+3. **Is the loss path in scope when unreachable in play?** (Inert enemy,
    no self-damage card.) Implement-and-test via unit construction anyway,
    or defer?
-5. **Starter content numbers**: how many Strike/Defend-like cards, costs,
-   values, enemy HP; and whether shipped starter cards are Consume or
-   Reusable.
-6. **Block-clear timing** (StS: at the start of the unit's own turn) —
+4. **Starter content numbers**: how many Strike/Defend-like cards, costs,
+   values, enemy HP; whether shipped starter cards are Consume or Reusable;
+   whether a stepping 6-7-8 card joins the starter deck (it exercises the
+   cursor machinery in real play — the alternative is a test-only card).
+5. **Block-clear timing** (StS: at the start of the unit's own turn) —
    confirm hook placement in `begin_player_turn`; does enemy block clearing
    land now or with step 3?
-7. **New event shapes** (`DamageDealt` / `BlockGained` / `UnitDied` /
+6. **New event shapes** (`DamageDealt` / `BlockGained` / `UnitDied` /
    `CombatOver`): amounts pre/post block, actor fields — propose, get
    ruling.
 
