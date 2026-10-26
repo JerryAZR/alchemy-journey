@@ -90,11 +90,12 @@ enum Instruction {
   root block**. (A stepping 6-7-8 damage card is three `Apply` nodes and
   nothing else; a potion is `Eval(k)` grouping its k atoms.)
 - Groups **nest multiplicatively**: `Eval(2) - Eval(2) - D - D - Eval(2) -
-  D - D` is `Eval(2)[Eval(2)[D,D], Eval(2)[D,D]]` = 4 damage. The flat scan
-  implements this with a quota stack — drawing an atom or an `Eval` spends
-  one block of the innermost quota, `Eval` pushes its own quota, spent
-  quotas pop, and the cast ends the moment the stack empties. No tree is
-  built.
+  D - D` is `Eval(2)[Eval(2)[D,D], Eval(2)[D,D]]` = 4 damage. Conceptually
+  the flat scan keeps a quota stack (drawing an atom or an `Eval` spends
+  one block of the innermost quota; `Eval` pushes its own; the cast ends
+  when the stack empties). No tree is built — and since spending is always
+  innermost, the implementation keeps just the stack's *sum* in a single
+  counter.
 - **Register instructions ride free**: `BindTarget`, and later modifiers,
   are not blocks and never spend quota. (Potions rely on this: `Eval(k)`
   counts atoms only, so the lowering's `BindTarget` doesn't break the
@@ -102,6 +103,9 @@ enum Instruction {
 - A cast is a **paused evaluation**: all eval state — cursor, pending
   modifiers, active bind — lives on the card instance and persists until
   combat end. After the last node the cursor wraps to 0 for the next cast.
+  After a completed cast the cursor rests on **the next unconsumed cell —
+  a gap, if that's what's next**; gaps are skipped when scanned, not at
+  rest time.
 - `unwrap: u8` on the card def, default 0: within one play — including any
   future triggered sub-casts, which share the budget — the cursor may pass
   slot 0 at most `unwrap` times. This kills free-cast infinite loops (a
@@ -122,9 +126,12 @@ which is precisely what makes it predictable. Corollaries:
 - "Next atom" modifiers (a different flavor, looking through groups) are
   available as distinct components if content wants them — not a
   reinterpretation of block-modifiers.
-- Implementation-wise: each quota-stack frame will carry the modifiers
-  pending when its block was entered. Exercised for real when the first
-  modifier ships; this principle is its specification.
+- Representation-wise: pending modifiers live in the card's eval registers;
+  whether group frames carry their own modifier copies (a real stack) or
+  modifiers are global-until-consumed is decided when the first modifier
+  ships. The single-counter quota implementation forecloses nothing.
+  Exercised for real when the first modifier ships; this principle is its
+  specification.
 
 ### Sparse vectors
 

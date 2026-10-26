@@ -76,23 +76,23 @@ pub(crate) struct CastPlan {
 /// Simulates one cast of `card` without touching any state (DESIGN.md:
 /// paused-stepping evaluation with grouping semantics).
 ///
-/// Blocks and quotas: the unit of evaluation is the *block* — an atom, or
+/// Blocks and budgets: the unit of evaluation is the *block* — an atom, or
 /// a group built by `Eval(N)` ("the next N blocks become one block"). A
-/// cast consumes one root block. The scan tracks a quota stack: drawing an
-/// atom or an `Eval` spends one block of the innermost quota; `Eval` then
-/// pushes its own quota, which is how groups nest multiplicatively.
-/// Register instructions (`BindTarget`, and later modifiers) ride free —
-/// they are not blocks and never spend quota. A spent quota pops; when the
-/// stack empties, the cast ends immediately.
+/// cast consumes one root block. Conceptually the scan keeps a quota stack
+/// (drawing an atom or an `Eval` spends one block of the innermost quota,
+/// `Eval` pushes its own quota, spent quotas pop, and the cast ends the
+/// moment the stack empties). Since spending is always innermost and
+/// quotas commute, the stack's *sum* is an equivalent single counter —
+/// that is what `budget` is. (When block-scoped modifiers are designed,
+/// the frame representation is decided then; the counter forecloses
+/// nothing.)
 ///
-/// The scan stops at the vector end unless the wrap budget (`def.unwrap`)
-/// lets it pass slot 0; reaching the end rests the cursor at 0, which is
-/// what makes the next cast cycle.
-///
-/// Termination: each iteration consumes one instruction index and advances
-/// the cursor; each lap covers at most `len` indices and there are at most
-/// `unwrap + 1` laps. Exceeding that bound is a logic bug, so it panics —
-/// a test failure, never a hang.
+/// The scan order — from the cursor to the vector end, then at most
+/// `unwrap` laps from slot 0 — is owned entirely by [`ScanOrder`], which
+/// is finite by construction. Reaching the vector end rests the cursor at
+/// 0, which is what makes the next cast cycle. After a completed cast the
+/// cursor rests on the next unconsumed cell — a gap, if that's what's
+/// next; gaps are skipped when scanned, not at rest time.
 pub(crate) fn plan_cast(card: &Card) -> CastPlan {
     let effects = &card.def.effects;
     let mut plan = CastPlan {
@@ -101,56 +101,74 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
         final_bind: card.bind,
         needs_chosen: false,
     };
-    let mut quotas: Vec<u32> = vec![1];
-    let mut wraps_left = card.def.unwrap;
-    let max_iterations = (card.def.unwrap as usize + 1) * effects.len();
-    let mut iterations = 0;
-    let mut i = card.cursor;
-    loop {
-        if quotas.is_empty() {
-            break; // root block complete: cursor rests on the next instruction
-        }
-        if i == effects.len() {
-            if wraps_left == 0 {
-                break; // vector end: cast stops; cursor rests at 0
-            }
-            wraps_left -= 1;
-            i = 0;
-            continue;
-        }
-        iterations += 1;
-        assert!(
-            iterations <= max_iterations,
-            "plan_cast exceeded its iteration bound ({max_iterations})"
-        );
+    let mut scan = ScanOrder::new(card.cursor, effects.len(), card.def.unwrap);
+    let mut budget: u32 = 1;
+    for i in &mut scan {
         match effects[i] {
             Instruction::Eval(n) => {
-                // A group is one block of its parent, then pushes its own quota.
-                spend_block(&mut quotas);
-                quotas.push(n);
+                // A group spends one block of its parent, then adds its own.
+                budget = budget - 1 + n;
             }
             Instruction::BindTarget(spec) => {
                 plan.final_bind = spec; // rides free: not a block
             }
             Instruction::Apply(atom) => {
-                spend_block(&mut quotas);
+                budget -= 1;
                 if plan.final_bind == TargetSpec::Chosen {
                     plan.needs_chosen = true;
                 }
                 plan.casts.push((atom, plan.final_bind));
             }
         }
-        i += 1;
+        if budget == 0 {
+            break; // root block complete
+        }
     }
-    plan.resting_cursor = if i == effects.len() { 0 } else { i };
+    plan.resting_cursor = scan.resting_index();
     plan
 }
 
-/// Spends one block from the innermost quota and pops spent groups.
-fn spend_block(quotas: &mut Vec<u32>) {
-    *quotas.last_mut().expect("a drawn block always has a quota") -= 1;
-    while quotas.last() == Some(&0) {
-        quotas.pop();
+/// Instruction indices in scan order: from `start` to the vector end, then
+/// at most `unwrap` laps from slot 0. Finite by construction — at most
+/// `(unwrap + 1) * len` indices — so a logic bug terminates the scan
+/// rather than hanging it. The single owner of cursor arithmetic.
+struct ScanOrder {
+    len: usize,
+    /// The next index to yield; may be `len` (meaning: wrap or stop).
+    next: usize,
+    wraps_left: u8,
+}
+
+impl ScanOrder {
+    fn new(start: usize, len: usize, unwrap: u8) -> Self {
+        Self {
+            len,
+            next: start,
+            wraps_left: unwrap,
+        }
+    }
+
+    /// The cursor position after the consumed indices: the next unconsumed
+    /// cell, normalized — end-of-vector rests at 0 (the between-cast wrap).
+    fn resting_index(&self) -> usize {
+        if self.next >= self.len { 0 } else { self.next }
+    }
+}
+
+impl Iterator for ScanOrder {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.next >= self.len {
+            if self.wraps_left == 0 {
+                return None;
+            }
+            self.wraps_left -= 1;
+            self.next = 0;
+        }
+        let index = self.next;
+        self.next += 1;
+        Some(index)
     }
 }
 
