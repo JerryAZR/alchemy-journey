@@ -87,12 +87,12 @@ pub(crate) struct CastPlan {
 /// the frame representation is decided then; the counter forecloses
 /// nothing.)
 ///
-/// The scan order — from the cursor to the vector end, then at most
-/// `unwrap` laps from slot 0 — is owned entirely by [`ScanOrder`], which
-/// is finite by construction. Reaching the vector end rests the cursor at
-/// 0, which is what makes the next cast cycle. After a completed cast the
-/// cursor rests on the next unconsumed cell — a gap, if that's what's
-/// next; gaps are skipped when scanned, not at rest time.
+/// All scan-termination policy — the block budget *and* the wrap limit —
+/// is the single break condition below. [`ScanCursor`] is a policy-free
+/// walker: it advances (wrapping past the vector end, counting laps) and
+/// reports its position; when the loop breaks, that position *is* the
+/// resting cursor — the next unconsumed cell, or 0 after a wrap, with no
+/// normalization rule.
 pub(crate) fn plan_cast(card: &Card) -> CastPlan {
     let effects = &card.def.effects;
     let mut plan = CastPlan {
@@ -101,9 +101,13 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
         final_bind: card.bind,
         needs_chosen: false,
     };
-    let mut scan = ScanOrder::new(card.cursor, effects.len(), card.def.unwrap);
+    if effects.is_empty() {
+        return plan;
+    }
+    let mut scan = ScanCursor::new(card.cursor, effects.len());
     let mut budget: u32 = 1;
-    for i in &mut scan {
+    loop {
+        let i = scan.position();
         match effects[i] {
             Instruction::Eval(n) => {
                 // A group spends one block of its parent, then adds its own.
@@ -120,55 +124,52 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
                 plan.casts.push((atom, plan.final_bind));
             }
         }
-        if budget == 0 {
-            break; // root block complete
+        scan.advance();
+        if budget == 0 || scan.wraps() > u32::from(card.def.unwrap) {
+            break;
         }
     }
-    plan.resting_cursor = scan.resting_index();
+    plan.resting_cursor = scan.position();
     plan
 }
 
-/// Instruction indices in scan order: from `start` to the vector end, then
-/// at most `unwrap` laps from slot 0. Finite by construction — at most
-/// `(unwrap + 1) * len` indices — so a logic bug terminates the scan
-/// rather than hanging it. The single owner of cursor arithmetic.
-struct ScanOrder {
+/// A policy-free walker over the effect vector. `advance` moves to the
+/// next cell, wrapping past the end and counting laps; `position` is
+/// always the current cell; `wraps` is how often slot 0 was passed.
+/// Finite scans are the *caller's* policy (budget and wrap limit). When
+/// `Empty` slots land, gap-skipping goes in `advance` — and the resting
+/// position automatically becomes the next non-empty cell (DESIGN.md,
+/// "Sparse vectors").
+struct ScanCursor {
     len: usize,
-    /// The next index to yield; may be `len` (meaning: wrap or stop).
-    next: usize,
-    wraps_left: u8,
+    pos: usize,
+    wraps: u32,
 }
 
-impl ScanOrder {
-    fn new(start: usize, len: usize, unwrap: u8) -> Self {
+impl ScanCursor {
+    /// Starts at `start`. `len` must be non-zero.
+    fn new(start: usize, len: usize) -> Self {
         Self {
             len,
-            next: start,
-            wraps_left: unwrap,
+            pos: start,
+            wraps: 0,
         }
     }
 
-    /// The cursor position after the consumed indices: the next unconsumed
-    /// cell, normalized — end-of-vector rests at 0 (the between-cast wrap).
-    fn resting_index(&self) -> usize {
-        if self.next >= self.len { 0 } else { self.next }
+    fn position(&self) -> usize {
+        self.pos
     }
-}
 
-impl Iterator for ScanOrder {
-    type Item = usize;
+    fn wraps(&self) -> u32 {
+        self.wraps
+    }
 
-    fn next(&mut self) -> Option<usize> {
-        if self.next >= self.len {
-            if self.wraps_left == 0 {
-                return None;
-            }
-            self.wraps_left -= 1;
-            self.next = 0;
+    fn advance(&mut self) {
+        self.pos += 1;
+        if self.pos == self.len {
+            self.pos = 0;
+            self.wraps += 1;
         }
-        let index = self.next;
-        self.next += 1;
-        Some(index)
     }
 }
 
