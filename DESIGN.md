@@ -40,10 +40,10 @@ AGENTS.md. History and rationale live in `devlog/`.
 
 ## Potions (step 2 builds the first of these)
 
-- Zero cost, flat effect list, effects apply in a **predefined order**, single
-  **target scope per potion**: `{ Caster | OneUnit | OneSide | Everyone }`
-  (`OneSide`/`Everyone` are deferred variants — no content needs them yet).
-  `OneUnit` means the player-chosen target; `Caster` means the drinker.
+- Zero cost, flat effect list, effects apply in a **predefined order**,
+  single **target scope per potion** — one `TargetSpec` for the whole
+  potion: `Chosen` (the player picks at play time), `Caster` (the
+  drinker), or the `AllX`/`Everyone` roles once content needs them.
 - Per-potion scope means "give myself 10 shield, then deal 10 damage to an
   enemy" is **not** a valid potion — effects within one potion share one
   scope. Repeated atoms (`[Damage(N), Damage(N)]`) are structurally fine;
@@ -51,10 +51,9 @@ AGENTS.md. History and rationale live in `devlog/`.
 - Potion authoring invariants (flat, single scope, no modifiers, no triggers)
   are enforced at the **authoring layer**, not the executor. (Rust enforces
   memory safety in the language, not by running on a different CPU than C.)
-- Lowering is mechanical (`k` = the potion's atom count):
-  - `Scope::Caster`  → `[Eval(k), BindTarget(Caster), ...atoms]`
-  - `Scope::OneUnit` → `[Eval(k), ...atoms]` (atoms default to the chosen
-    target; validation requires one)
+- Lowering is mechanical (`k` = the potion's atom count): `[Eval(k)]`,
+  plus `BindTarget(target)` unless the target is `Chosen` (the register's
+  default — no instruction needed), plus the atoms.
 
 ## The effect IR and evaluator (settled — do not re-litigate)
 
@@ -72,12 +71,13 @@ AGENTS.md. History and rationale live in `devlog/`.
 ```rust
 enum Atom { Damage(u32), Block(u32) }   // step 2 slice; more land with content
 
-enum TargetSpec { Caster, AllEnemies, AllAllies, Everyone }
+enum TargetSpec { Chosen, Caster, AllEnemies, AllAllies, Everyone }
+// Chosen: the player's play-time pick, and the register's default —
+// BindTarget(Chosen) is also the way back from any other bind.
 
 enum Instruction {
     Eval(u32),                // this cast applies up to N atoms (default: 1)
-    BindTarget(TargetSpec),   // redirect following atoms until cleared/changed
-    ClearBind,                // return to the chosen-target default
+    BindTarget(TargetSpec),   // set the bind register until replaced
     Apply(Atom),              // apply one atom to the resolved target
 }
 ```
@@ -97,11 +97,16 @@ enum Instruction {
   lone "deal 10, then cast the next for free" node fizzles at budget end).
 - Run-persistence of eval state: out of scope (not hard, just undesigned).
 
-### Targeting: two-rule resolution
+### Targeting: one-rule resolution
 
-1. An active bind governs.
-2. Otherwise the atom hits the **chosen** target — the single optional
-   target in `Intent::PlayCard { hand_index, target: Option<UnitRef> }`.
+Every atom resolves against the card's **bind register**, which defaults
+to `Chosen` — the single optional target in
+`Intent::PlayCard { hand_index, target: Option<UnitRef> }`. `BindTarget`
+sets the register; there is no separate reset instruction and no per-node
+override. (Review note: `Chosen` was briefly special-cased as "absence of
+bind" with a `ClearBind` instruction — a leftover of the tree-IR framing.
+Unifying it into `TargetSpec` deleted an instruction, an `Option` wrapper,
+and a resolution rule, and made `BindTarget(Chosen)` expressible.)
 
 - **Targeting is bind-or-chosen for now.** Retargeting costs slots
   (`BindTarget`), keeping targeting expansion inside the slot economy:

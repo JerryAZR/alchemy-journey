@@ -103,8 +103,8 @@ pub struct Card {
     pub def: CardDef,
     /// Where the next cast's scan starts.
     pub cursor: usize,
-    /// The active target bind, if a past cast left one.
-    pub bind: Option<TargetSpec>,
+    /// The active target bind (defaults to `Chosen`: unbound).
+    pub bind: TargetSpec,
 }
 
 impl Card {
@@ -113,7 +113,7 @@ impl Card {
             id,
             def,
             cursor: 0,
-            bind: None,
+            bind: TargetSpec::Chosen,
         }
     }
 }

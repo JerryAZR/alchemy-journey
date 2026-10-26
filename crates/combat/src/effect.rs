@@ -14,8 +14,11 @@ pub enum Atom {
 }
 
 /// A target *role*, resolved to concrete units at application time.
+/// `Chosen` is the player's play-time pick — the default register value,
+/// so `BindTarget(Chosen)` is also the way back from any other bind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetSpec {
+    Chosen,
     Caster,
     AllEnemies,
     AllAllies,
@@ -27,40 +30,30 @@ pub enum Instruction {
     /// This cast applies up to N atoms (the default is 1). Potions lower
     /// with their exact atom count; "evaluate all" needs no special case.
     Eval(u32),
-    /// Redirect the following atoms until cleared or replaced.
+    /// Set the bind register: following atoms resolve against this role
+    /// until another `BindTarget` replaces it.
     BindTarget(TargetSpec),
-    /// Return to the chosen-target default.
-    ClearBind,
     /// Apply one atom to the resolved target.
     Apply(Atom),
 }
 
 /// Potion authoring type. The invariants (flat, single scope, predefined
 /// order) are enforced here, at the authoring layer, not in the executor.
+/// Single scope = one `TargetSpec` for the whole potion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PotionDef {
-    pub scope: Scope,
+    pub target: TargetSpec,
     pub effects: Vec<Atom>,
-}
-
-/// Per-potion target scope. `OneSide`/`Everyone` are deferred variants —
-/// no content needs them yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    /// The drinker.
-    Caster,
-    /// One chosen unit; the player picks the target at play time.
-    OneUnit,
 }
 
 impl PotionDef {
     /// Mechanical lowering into the IR (DESIGN.md). `Eval(k)` with the exact
-    /// atom count makes the whole vector one cast; `Caster` scope prepends a
-    /// bind; `OneUnit` leaves atoms on the chosen-target default.
+    /// atom count makes the whole vector one cast; a non-`Chosen` target
+    /// prepends a bind; `Chosen` needs none — it is the register's default.
     pub fn lower(&self) -> Vec<Instruction> {
         let mut out = vec![Instruction::Eval(self.effects.len() as u32)];
-        if self.scope == Scope::Caster {
-            out.push(Instruction::BindTarget(TargetSpec::Caster));
+        if self.target != TargetSpec::Chosen {
+            out.push(Instruction::BindTarget(self.target));
         }
         out.extend(self.effects.iter().copied().map(Instruction::Apply));
         out
@@ -74,7 +67,7 @@ impl PotionDef {
 pub(crate) struct CastPlan {
     pub(crate) steps: Vec<usize>,
     pub(crate) resting_cursor: usize,
-    pub(crate) final_bind: Option<TargetSpec>,
+    pub(crate) final_bind: TargetSpec,
     pub(crate) needs_chosen: bool,
 }
 
@@ -111,11 +104,7 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
                 plan.steps.push(i);
             }
             Instruction::BindTarget(spec) => {
-                plan.final_bind = Some(spec);
-                plan.steps.push(i);
-            }
-            Instruction::ClearBind => {
-                plan.final_bind = None;
+                plan.final_bind = spec;
                 plan.steps.push(i);
             }
             Instruction::Apply(_) => {
@@ -123,7 +112,7 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
                     break; // budget spent: cursor rests on this unconsumed instruction
                 }
                 applied += 1;
-                if plan.final_bind.is_none() {
+                if plan.final_bind == TargetSpec::Chosen {
                     plan.needs_chosen = true;
                 }
                 plan.steps.push(i);

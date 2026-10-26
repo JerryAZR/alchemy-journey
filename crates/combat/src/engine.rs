@@ -197,13 +197,9 @@ impl CombatState {
         for &step in &plan.steps {
             match card.def.effects[step] {
                 Instruction::Eval(_) => {}
-                Instruction::BindTarget(spec) => bind = Some(spec),
-                Instruction::ClearBind => bind = None,
+                Instruction::BindTarget(spec) => bind = spec,
                 Instruction::Apply(atom) => {
-                    let targets: Vec<UnitRef> = match bind {
-                        Some(spec) => self.resolve_spec(spec, caster),
-                        None => chosen.into_iter().collect(),
-                    };
+                    let targets = self.resolve_spec(bind, caster, chosen);
                     for target in targets {
                         self.apply_atom(atom, target, events);
                     }
@@ -220,8 +216,14 @@ impl CombatState {
     }
 
     /// Resolves a target role to concrete units: living units only, in
-    /// stable vec order (allies before enemies for `Everyone`).
-    fn resolve_spec(&self, spec: TargetSpec, caster: PlayerId) -> Vec<UnitRef> {
+    /// stable vec order (allies before enemies for `Everyone`). `Chosen`
+    /// resolves to the play-time target supplied with the intent.
+    fn resolve_spec(
+        &self,
+        spec: TargetSpec,
+        caster: PlayerId,
+        chosen: Option<UnitRef>,
+    ) -> Vec<UnitRef> {
         let enemies = || {
             (0..self.enemies.len())
                 .map(|i| UnitRef::Enemy(EnemyId(i as u32)))
@@ -234,6 +236,7 @@ impl CombatState {
                 .filter(|&r| self.unit(r).is_some_and(Unit::is_alive))
         };
         match spec {
+            TargetSpec::Chosen => chosen.into_iter().collect(),
             TargetSpec::Caster => vec![UnitRef::Player(caster)],
             TargetSpec::AllEnemies => enemies().collect(),
             TargetSpec::AllAllies => allies().collect(),

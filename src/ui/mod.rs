@@ -395,7 +395,6 @@ fn effect_line(card: &Card) -> String {
         let text = match instruction {
             Instruction::Eval(n) => format!("all({n})"),
             Instruction::BindTarget(_) => "bind".to_string(),
-            Instruction::ClearBind => "clear".to_string(),
             Instruction::Apply(Atom::Damage(n)) => format!("{n}dmg"),
             Instruction::Apply(Atom::Block(n)) => format!("{n}blk"),
         };

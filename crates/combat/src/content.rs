@@ -1,7 +1,7 @@
 //! Combat content: the starter combat. Static data assembled from the
 //! definition types; no mechanics live here.
 
-use crate::effect::{Atom, Instruction, PotionDef, Scope, TargetSpec};
+use crate::effect::{Atom, Instruction, PotionDef, TargetSpec};
 use crate::state::{Card, CardDef, EnemyDef, OnPlay, PlayerRunState};
 use crate::wire::Event;
 use crate::{CombatState, LOCAL_PLAYER};
@@ -63,7 +63,7 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
             8,
             "Firebomb Flask",
             PotionDef {
-                scope: Scope::OneUnit,
+                target: TargetSpec::Chosen,
                 effects: vec![Atom::Damage(20)],
             },
         )])
@@ -71,7 +71,7 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
             9,
             "Stoneskin Flask",
             PotionDef {
-                scope: Scope::Caster,
+                target: TargetSpec::Caster,
                 effects: vec![Atom::Block(15)],
             },
         )])

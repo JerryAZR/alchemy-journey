@@ -77,7 +77,7 @@ fn firebomb(id: u32) -> Card {
             cost: 0,
             on_play: OnPlay::Consume,
             effects: PotionDef {
-                scope: Scope::OneUnit,
+                target: TargetSpec::Chosen,
                 effects: vec![Atom::Damage(20)],
             }
             .lower(),
@@ -352,7 +352,7 @@ fn deterministic_seed_reproduces_state_and_events() {
 #[test]
 fn potion_lowering_is_mechanical() {
     let caster = PotionDef {
-        scope: Scope::Caster,
+        target: TargetSpec::Caster,
         effects: vec![Atom::Block(5), Atom::Block(3)],
     }
     .lower();
@@ -366,7 +366,7 @@ fn potion_lowering_is_mechanical() {
         ]
     );
     let chosen = PotionDef {
-        scope: Scope::OneUnit,
+        target: TargetSpec::Chosen,
         effects: vec![Atom::Damage(9)],
     }
     .lower();
