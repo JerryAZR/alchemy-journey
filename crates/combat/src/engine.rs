@@ -8,10 +8,11 @@ use rand::seq::SliceRandom;
 use crate::effect::{Atom, TargetSpec};
 use crate::effect::{Instruction, cast_needs_target, plan_cast};
 use crate::state::Card;
-use crate::state::{CombatPlayer, CombatState, EnemyDef, OnPlay, PlayerRunState, Unit};
-use crate::wire::{
-    CombatOutcome, EnemyId, Event, Intent, PlayerId, RejectReason, StampedIntent, UnitRef,
+use crate::state::{
+    CombatOutcome, CombatPlayer, CombatState, EnemyDef, EnemyId, OnPlay, PlayerId, PlayerRunState,
+    Unit, UnitRef,
 };
+use crate::wire::{Event, Intent, RejectReason, StampedIntent};
 use crate::{ENERGY_PER_TURN, HAND_SIZE};
 
 impl CombatState {

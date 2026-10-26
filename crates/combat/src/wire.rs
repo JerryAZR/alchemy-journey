@@ -1,24 +1,10 @@
-//! Wire vocabulary (COMBAT.md Ruling 2): identities, intents, rejections,
-//! events. Plain data — indices, not pointers — and the *only* things that
-//! cross engine boundaries under lockstep.
+//! Wire vocabulary (COMBAT.md Ruling 2): intents, rejections, events —
+//! the *messages* that cross engine boundaries under lockstep. Plain data,
+//! indices not pointers. The identities these messages carry (`PlayerId`,
+//! `UnitRef`, `CombatOutcome`, ...) are state vocabulary and live in
+//! `state.rs`; this module depends on it, never the reverse.
 
-use crate::state::Card;
-
-/// Opaque player identity. Deliberately *not* a collection index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PlayerId(pub u32);
-
-/// Enemy identity. Assigned in `enemies` vec order at combat start and
-/// index-stable: corpses are never removed, so the index never shifts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EnemyId(pub u32);
-
-/// A unit by identity, not index (COMBAT.md Ruling 2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnitRef {
-    Player(PlayerId),
-    Enemy(EnemyId),
-}
+use crate::state::{Card, CombatOutcome, PlayerId, UnitRef};
 
 /// As submitted by a player. Carries no identity. `target` is the single
 /// optional "chosen" target (DESIGN.md, two-rule target resolution).
@@ -111,12 +97,4 @@ pub enum Event {
     CombatOver {
         outcome: CombatOutcome,
     },
-}
-
-/// How a combat ended. Only `Victory` exists in step 2: the loss path is
-/// deferred until enemy damage exists and multiple combats make it
-/// e2e-testable (DESIGN.md).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CombatOutcome {
-    Victory,
 }

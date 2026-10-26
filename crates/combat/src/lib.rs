@@ -6,12 +6,12 @@
 //! boundaries.
 //!
 //! Module map:
-//! - [`wire`] — identities, intents, rejections, events: the vocabulary
-//!   that crosses engine boundaries.
+//! - [`wire`] — intents, rejections, events: the messages that cross
+//!   engine boundaries.
 //! - [`effect`] — the effect IR and its pure planning half. Nothing here
 //!   touches combat state.
-//! - [`state`] — what exists, at every data tier (definitions, run state,
-//!   live combat state). Data and trivial accessors only.
+//! - [`state`] — what exists, at every data tier (identities, definitions,
+//!   run state, live combat state). Data and trivial accessors only.
 //! - [`engine`] — what happens: every mutation of [`CombatState`].
 //! - [`content`] — the starter combat, assembled from definition types.
 

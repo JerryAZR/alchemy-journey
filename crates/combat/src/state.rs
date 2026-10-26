@@ -1,11 +1,40 @@
-//! State structures — what exists, at every tier. This module holds data
-//! and trivial accessors only; all mutation of `CombatState` lives in
+//! State structures — what exists, at every tier, plus the identity
+//! vocabulary (`PlayerId`, `EnemyId`, `UnitRef`, `CombatOutcome`) that both
+//! state and wire messages are expressed in. This module holds data and
+//! trivial accessors only; all mutation of `CombatState` lives in
 //! `engine.rs`.
 
 use rand::rngs::StdRng;
 
 use crate::effect::{Instruction, TargetSpec};
-use crate::wire::{CombatOutcome, PlayerId};
+
+// ---------------------------------------------------------------------------
+// Identity vocabulary (shared by state and wire)
+// ---------------------------------------------------------------------------
+
+/// Opaque player identity. Deliberately *not* a collection index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlayerId(pub u32);
+
+/// Enemy identity. Assigned in `enemies` vec order at combat start and
+/// index-stable: corpses are never removed, so the index never shifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EnemyId(pub u32);
+
+/// A unit by identity, not index (COMBAT.md Ruling 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitRef {
+    Player(PlayerId),
+    Enemy(EnemyId),
+}
+
+/// How a combat ended. Only `Victory` exists in step 2: the loss path is
+/// deferred until enemy damage exists and multiple combats make it
+/// e2e-testable (DESIGN.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombatOutcome {
+    Victory,
+}
 
 // ---------------------------------------------------------------------------
 // Tier 1: definitions
