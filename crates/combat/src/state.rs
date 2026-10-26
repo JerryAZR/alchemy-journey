@@ -137,9 +137,12 @@ pub struct CombatPlayer {
 }
 
 impl CombatPlayer {
-    /// Total cards across this player's piles; must stay constant.
-    /// Used by tests; will surface in a debug overlay later.
-    #[allow(dead_code)]
+    /// Total cards across this player's piles. A *conservation check*,
+    /// not a game rule: true today because no content creates or destroys
+    /// cards mid-combat (Consume is a pile, not deletion). The first
+    /// card-generating effect (StS's Shivs precedent) breaks it — tests
+    /// using it must then account for generated cards explicitly.
+    #[cfg(test)]
     pub fn total_cards(&self) -> usize {
         self.deck.len() + self.hand.len() + self.discard.len() + self.consumed.len()
     }
