@@ -1,7 +1,10 @@
 //! The UI frontend: renders a projection of [`CombatState`] and submits
 //! player intents. It never mutates combat state (COMBAT.md Ruling 4).
 
-use alchemy_combat::{CombatPlayer, CombatState, Intent, LOCAL_PLAYER, Unit};
+use alchemy_combat::{
+    Atom, Card, CombatOutcome, CombatPlayer, CombatState, EnemyId, Instruction, Intent,
+    LOCAL_PLAYER, Unit, UnitRef, cast_needs_target,
+};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Pressed;
@@ -15,6 +18,12 @@ struct MenuRoot;
 
 #[derive(Component)]
 struct CombatUiRoot;
+
+/// The hand index awaiting a chosen target, if any. UI policy: click a
+/// target-needing card to arm it, then click a living enemy to submit.
+/// Cleared whenever combat state changes (a play may shift hand indices).
+#[derive(Resource, Default)]
+struct Targeting(Option<usize>);
 
 /// Base/hover/press colors for a button so the styling system can restore it.
 #[derive(Component, Clone, Copy)]
@@ -38,7 +47,8 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::Menu), setup_menu)
+        app.init_resource::<Targeting>()
+            .add_systems(OnEnter(AppState::Menu), setup_menu)
             .add_systems(OnExit(AppState::Menu), despawn_all::<MenuRoot>)
             .add_systems(OnExit(AppState::Combat), despawn_all::<CombatUiRoot>)
             .add_systems(Update, (refresh_combat_ui, update_button_tints));
@@ -85,25 +95,31 @@ fn setup_menu(mut commands: Commands) {
 // Combat projection
 // ---------------------------------------------------------------------------
 
-/// Rebuilds the whole combat UI whenever the combat state changes.
-/// Cheap at this scale (≤ 11 cards) and keeps the projection trivially in
-/// sync — the UI is rebuildable from state at any time, by construction.
+/// Rebuilds the whole combat UI whenever the combat state or the targeting
+/// mode changes. Cheap at this scale (≤ 10 cards) and keeps the projection
+/// trivially in sync — the UI is rebuildable from state at any time, by
+/// construction.
 fn refresh_combat_ui(
     mut commands: Commands,
     combat: Option<Res<Combat>>,
+    mut targeting: ResMut<Targeting>,
     roots: Query<Entity, With<CombatUiRoot>>,
 ) {
     let Some(combat) = combat else { return };
-    if !combat.is_changed() {
+    if !combat.is_changed() && !targeting.is_changed() {
         return;
+    }
+    if combat.is_changed() {
+        // A state change may shift hand indices; drop any pending target arm.
+        targeting.bypass_change_detection().0 = None;
     }
     for entity in &roots {
         commands.entity(entity).despawn();
     }
-    spawn_combat_ui(&mut commands, &combat.0);
+    spawn_combat_ui(&mut commands, &combat.0, targeting.0);
 }
 
-fn spawn_combat_ui(commands: &mut Commands, state: &CombatState) {
+fn spawn_combat_ui(commands: &mut Commands, state: &CombatState, targeting: Option<usize>) {
     let local = state
         .player(LOCAL_PLAYER)
         .expect("single-player combat always has the local player");
@@ -123,8 +139,8 @@ fn spawn_combat_ui(commands: &mut Commands, state: &CombatState) {
         ))
         .with_children(|parent| {
             spawn_top_bar(parent, state, local);
-            spawn_arena(parent, state);
-            spawn_bottom_bar(parent, local);
+            spawn_arena(parent, state, targeting);
+            spawn_bottom_bar(parent, local, state.outcome, targeting);
         });
 }
 
@@ -138,10 +154,10 @@ fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState, local: 
             ..default()
         })
         .with_children(|bar| {
-            let status = if local.has_ended_turn {
-                "Turn ended"
-            } else {
-                "Your move"
+            let status = match state.outcome {
+                Some(CombatOutcome::Victory) => "Victory!",
+                None if local.has_ended_turn => "Turn ended",
+                None => "Your move",
             };
             bar.spawn(label(
                 format!("Turn {} — {status}   Energy: {}", state.turn, local.energy),
@@ -175,7 +191,7 @@ fn spawn_top_bar(parent: &mut ChildSpawnerCommands, state: &CombatState, local: 
         });
 }
 
-fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState) {
+fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState, targeting: Option<usize>) {
     parent
         .spawn(Node {
             width: percent(100),
@@ -195,9 +211,19 @@ fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState) {
                 })
                 .with_children(|side| {
                     for player in &state.players {
-                        spawn_unit_panel(side, &player.unit, Color::srgb(0.2, 0.35, 0.6));
+                        spawn_unit_panel(side, &player.unit, Color::srgb(0.2, 0.35, 0.6), None);
                     }
                 });
+            if state.outcome.is_some() {
+                arena.spawn(label(
+                    match state.outcome {
+                        Some(CombatOutcome::Victory) => "VICTORY",
+                        None => unreachable!(),
+                    },
+                    56.0,
+                    Color::srgb(0.9, 0.8, 0.4),
+                ));
+            }
             arena
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -205,47 +231,98 @@ fn spawn_arena(parent: &mut ChildSpawnerCommands, state: &CombatState) {
                     ..default()
                 })
                 .with_children(|side| {
-                    for enemy in &state.enemies {
-                        spawn_unit_panel(side, enemy, Color::srgb(0.6, 0.25, 0.25));
+                    for (index, enemy) in state.enemies.iter().enumerate() {
+                        // While a card is armed, living enemies become
+                        // target buttons (UI policy; the core validates).
+                        let target = targeting
+                            .map(|hand_index| (hand_index, UnitRef::Enemy(EnemyId(index as u32))));
+                        spawn_unit_panel(
+                            side,
+                            enemy,
+                            Color::srgb(0.6, 0.25, 0.25),
+                            enemy.is_alive().then_some(target).flatten(),
+                        );
                     }
                 });
         });
 }
 
-fn spawn_unit_panel(parent: &mut ChildSpawnerCommands, unit: &Unit, color: Color) {
-    parent
-        .spawn(Node {
+/// A unit panel; when `target` is `Some((hand_index, unit))` the panel is a
+/// button submitting that play with the chosen target.
+fn spawn_unit_panel(
+    parent: &mut ChildSpawnerCommands,
+    unit: &Unit,
+    color: Color,
+    target: Option<(usize, UnitRef)>,
+) {
+    let panel_color = if unit.is_alive() {
+        color
+    } else {
+        Color::srgb(0.25, 0.25, 0.28)
+    };
+    let mut entity = parent.spawn((
+        Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             row_gap: px(8),
             ..default()
-        })
-        .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: px(160),
-                    height: px(110),
-                    border: UiRect::all(px(3)),
-                    ..default()
+        },
+        // Targetable units light up gold.
+        BorderColor::all(if target.is_some() {
+            Color::srgb(0.95, 0.85, 0.4)
+        } else {
+            Color::srgb(0.85, 0.85, 0.85)
+        }),
+    ));
+    entity.with_children(|panel| {
+        let mut box_entity = panel.spawn((
+            Node {
+                width: px(160),
+                height: px(110),
+                border: UiRect::all(px(3)),
+                ..default()
+            },
+            BackgroundColor(panel_color),
+            BorderColor::all(Color::srgb(0.85, 0.85, 0.85)),
+        ));
+        if let Some((hand_index, unit_ref)) = target {
+            box_entity.insert((Button, ButtonTint::new(panel_color), Hovered::default()));
+            box_entity.observe(
+                move |_: On<Activate>,
+                      mut queue: ResMut<IntentQueue>,
+                      mut targeting: ResMut<Targeting>| {
+                    targeting.0 = None;
+                    queue.submit(Intent::PlayCard {
+                        hand_index,
+                        target: Some(unit_ref),
+                    });
                 },
-                BackgroundColor(color),
-                BorderColor::all(Color::srgb(0.85, 0.85, 0.85)),
-            ));
-            panel.spawn(label(unit.name.clone(), 18.0, Color::srgb(0.9, 0.9, 0.9)));
-            panel.spawn(label(
-                format!("HP {}/{}", unit.hp, unit.max_hp),
-                16.0,
-                Color::srgb(0.6, 0.9, 0.6),
-            ));
-            panel.spawn(label(
-                format!("Block {}", unit.block),
-                16.0,
-                Color::srgb(0.6, 0.7, 0.9),
-            ));
-        });
+            );
+        }
+        panel.spawn(label(unit.name.clone(), 18.0, Color::srgb(0.9, 0.9, 0.9)));
+        panel.spawn(label(
+            if unit.is_alive() {
+                format!("HP {}/{}", unit.hp, unit.max_hp)
+            } else {
+                "DEAD".to_string()
+            },
+            16.0,
+            Color::srgb(0.6, 0.9, 0.6),
+        ));
+        panel.spawn(label(
+            format!("Block {}", unit.block),
+            16.0,
+            Color::srgb(0.6, 0.7, 0.9),
+        ));
+    });
 }
 
-fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, local: &CombatPlayer) {
+fn spawn_bottom_bar(
+    parent: &mut ChildSpawnerCommands,
+    local: &CombatPlayer,
+    outcome: Option<CombatOutcome>,
+    targeting: Option<usize>,
+) {
     parent
         .spawn(Node {
             width: percent(100),
@@ -263,29 +340,73 @@ fn spawn_bottom_bar(parent: &mut ChildSpawnerCommands, local: &CombatPlayer) {
             })
             .with_children(|hand| {
                 for (index, card) in local.hand.iter().enumerate() {
-                    // Intent submission: multiplayer sends this over the
-                    // intent channel to the host; the UI knows no difference.
-                    hand.spawn((
-                        card_button(&card.def.name, card.def.cost),
-                        observe(move |_: On<Activate>, mut queue: ResMut<IntentQueue>| {
-                            queue.submit(Intent::PlayCard { hand_index: index });
-                        }),
-                    ));
+                    let needs_target = cast_needs_target(card);
+                    let armed = targeting == Some(index);
+                    let mut entity = hand.spawn(card_button(card, armed));
+                    // No observers once the combat is over: the terminal
+                    // state rejects everything anyway (RejectReason::CombatOver).
+                    if outcome.is_none() {
+                        // Intent submission: multiplayer sends this over the
+                        // intent channel to the host; the UI knows no
+                        // difference.
+                        entity.observe(
+                            move |_: On<Activate>,
+                                  mut queue: ResMut<IntentQueue>,
+                                  mut targeting: ResMut<Targeting>| {
+                                if needs_target {
+                                    // Arm (or disarm) the card; the next
+                                    // enemy click submits the play.
+                                    targeting.0 = if armed { None } else { Some(index) };
+                                } else {
+                                    queue.submit(Intent::PlayCard {
+                                        hand_index: index,
+                                        target: None,
+                                    });
+                                }
+                            },
+                        );
+                    }
                 }
             });
             // End turn.
-            bar.spawn((
-                text_button("End Turn", 130.0, 56.0, Color::srgb(0.5, 0.4, 0.15)),
-                observe(|_: On<Activate>, mut queue: ResMut<IntentQueue>| {
-                    queue.submit(Intent::EndTurn);
-                }),
+            let mut entity = bar.spawn(text_button(
+                "End Turn",
+                130.0,
+                56.0,
+                Color::srgb(0.5, 0.4, 0.15),
             ));
+            if outcome.is_none() {
+                entity.observe(|_: On<Activate>, mut queue: ResMut<IntentQueue>| {
+                    queue.submit(Intent::EndTurn);
+                });
+            }
         });
 }
 
 // ---------------------------------------------------------------------------
 // Widget helpers
 // ---------------------------------------------------------------------------
+
+/// Compact effect-program readout with the cursor bracketed — the paused
+/// evaluation is visible on the card face (DESIGN.md: predictability).
+fn effect_line(card: &Card) -> String {
+    let mut parts = Vec::new();
+    for (i, instruction) in card.def.effects.iter().enumerate() {
+        let text = match instruction {
+            Instruction::Eval(n) => format!("all({n})"),
+            Instruction::BindTarget(_) => "bind".to_string(),
+            Instruction::ClearBind => "clear".to_string(),
+            Instruction::Apply(Atom::Damage(n)) => format!("{n}dmg"),
+            Instruction::Apply(Atom::Block(n)) => format!("{n}blk"),
+        };
+        if i == card.cursor {
+            parts.push(format!("[{text}]"));
+        } else {
+            parts.push(text);
+        }
+    }
+    parts.join(" ")
+}
 
 fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
@@ -318,10 +439,15 @@ fn text_button(text: &str, width: f32, height: f32, color: Color) -> impl Bundle
     )
 }
 
-fn card_button(name: &str, cost: u32) -> impl Bundle {
+fn card_button(card: &Card, armed: bool) -> impl Bundle {
+    let base = if armed {
+        Color::srgb(0.75, 0.6, 0.2)
+    } else {
+        Color::srgb(0.55, 0.4, 0.15)
+    };
     (
         Button,
-        ButtonTint::new(Color::srgb(0.55, 0.4, 0.15)),
+        ButtonTint::new(base),
         Hovered::default(),
         Node {
             width: px(110),
@@ -335,11 +461,15 @@ fn card_button(name: &str, cost: u32) -> impl Bundle {
             ..default()
         },
         BorderColor::all(Color::srgb(0.85, 0.75, 0.4)),
-        BackgroundColor(Color::srgb(0.55, 0.4, 0.15)),
+        BackgroundColor(base),
         children![
-            label(format!("Cost {cost}"), 13.0, Color::srgb(0.9, 0.9, 0.7)),
-            label(name, 15.0, Color::srgb(0.95, 0.95, 0.95)),
-            label("Potion", 12.0, Color::srgb(0.8, 0.7, 0.5)),
+            label(
+                format!("Cost {}", card.def.cost),
+                13.0,
+                Color::srgb(0.9, 0.9, 0.7)
+            ),
+            label(card.def.name.clone(), 15.0, Color::srgb(0.95, 0.95, 0.95)),
+            label(effect_line(card), 11.0, Color::srgb(0.85, 0.8, 0.6)),
         ],
     )
 }
