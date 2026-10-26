@@ -105,7 +105,8 @@ enum Instruction {
   combat end. After the last node the cursor wraps to 0 for the next cast.
   After a completed cast the cursor rests on **the next unconsumed cell —
   a gap, if that's what's next**; gaps are skipped when scanned, not at
-  rest time.
+  rest time. (This rest rule is contingent on the mid-battle editing
+  question — see "Sparse vectors" below.)
 - `unwrap: u8` on the card def, default 0: within one play — including any
   future triggered sub-casts, which share the budget — the cursor may pass
   slot 0 at most `unwrap` times. This kills free-cast infinite loops (a
@@ -142,6 +143,15 @@ vector that executes — one representation, cursor positions in the UI are
 the indices the evaluator sees. (Rejected alternative: pack at build time
 — that keeps two representations in sync and must save the sparse
 original anyway.)
+
+- **The cursor-rest rule for gaps depends on mid-battle editing** (open
+  question). If wands can be edited mid-combat, the cursor must rest on
+  the next *cell*, empty or not — otherwise a component inserted into a
+  skipped gap would never fire until wrap. If mid-battle editing never
+  ships, gap-skipping moves into the scan iterator (`ScanOrder.advance`
+  finds the next non-empty cell) so the cursor always rests on a
+  meaningful cell — better UX. Current code rests on the next cell: the
+  editing-safe default. The switch is localized to `ScanOrder` either way.
 
 ### Targeting: one-rule resolution
 
@@ -279,7 +289,8 @@ require reading history)
   in the core; possible later as an opt-in component type. Not binding.)
 - When/how brewing happens (stations? anywhere? ingredient sources), and
   potion recipe structure.
-- In-combat assembly: shape and restrictions.
+- In-combat assembly: shape and restrictions. (Also decides the
+  cursor-rest rule for gaps — see "Sparse vectors".)
 - Map shape per run (DAG vs free-roam) — the architecture supports both;
   the game choice is open.
 - Dead-player semantics details in co-op (current encoding: "all living
