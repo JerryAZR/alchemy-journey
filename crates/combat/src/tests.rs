@@ -473,6 +473,34 @@ fn unwrap_budget_allows_one_lap_past_slot_zero() {
     assert_eq!(s.outcome, Some(CombatOutcome::Victory));
 }
 
+/// Sparse-wand starvation (DESIGN.md): a cast whose start sits past the
+/// content must still reach it — the catch-up lap to the starting cell is
+/// not a wrap. [D6, bind, bind] rests its cursor at 1; the second cast
+/// scans the free instructions and fires D6 again. (The filler binds to
+/// `Chosen` — a no-op register write standing in for future Empty cells:
+/// both ride free. Note the trap avoided here: binds are *not* inert —
+/// `BindTarget(Caster)` filler would rebind the wrapped damage to the
+/// caster and the chosen target would rightly reject.)
+#[test]
+fn content_before_the_cursor_does_not_starve() {
+    let card = program_card(
+        vec![
+            Instruction::Apply(Atom::Damage(6)),
+            Instruction::BindTarget(TargetSpec::Chosen),
+            Instruction::BindTarget(TargetSpec::Chosen),
+        ],
+        0,
+    );
+    let mut s = starter_with(vec![card]);
+    let enemy = Some(UnitRef::Enemy(EnemyId(0)));
+    play_at(&mut s, LOCAL_PLAYER, 0, enemy);
+    assert_eq!(s.enemies[0].hp, 24);
+    assert_eq!(s.player(LOCAL_PLAYER).unwrap().discard[0].cursor, 1);
+    end_turn(&mut s, LOCAL_PLAYER);
+    play_at(&mut s, LOCAL_PLAYER, 0, enemy);
+    assert_eq!(s.enemies[0].hp, 18); // not 24: the second cast fires too
+}
+
 /// A one-card deck plays the same instance every turn, so its cursor and
 /// bind can be observed stepping across casts.
 fn one_card_loop(card: Card) -> CombatState {

@@ -59,9 +59,10 @@ pub struct CardDef {
     pub on_play: OnPlay,
     /// The flat effect program (DESIGN.md).
     pub effects: Vec<Instruction>,
-    /// Within one play, the cursor may pass slot 0 at most this many times
-    /// (shared across any future triggered sub-casts). Default 0: a cast
-    /// never wraps; the cursor only cycles *between* casts.
+    /// Within one play, the scan may return to the cast's starting cell at
+    /// most this many times (shared across any future triggered sub-casts).
+    /// Default 0: every cell is still scanned once per play — the catch-up
+    /// lap back to the start is not a wrap — but nothing is re-scanned.
     pub unwrap: u8,
 }
 

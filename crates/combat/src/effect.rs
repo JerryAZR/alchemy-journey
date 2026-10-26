@@ -134,15 +134,20 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
 }
 
 /// A policy-free walker over the effect vector. `advance` moves to the
-/// next cell, wrapping past the end and counting laps; `position` is
-/// always the current cell; `wraps` is how often slot 0 was passed.
-/// Finite scans are the *caller's* policy (budget and wrap limit). When
-/// `Empty` slots land, gap-skipping goes in `advance` — and the resting
-/// position automatically becomes the next non-empty cell (DESIGN.md,
-/// "Sparse vectors").
+/// next cell (wrapping past the end) and counts **laps**: how often the
+/// walk has returned to the cell the scan started from. (Laps are counted
+/// relative to the start, not slot 0: a sparse wand's cast must reach
+/// cells *before* its start without spending wrap budget — otherwise
+/// content there starves and every other cast misfires.) `position` is
+/// always the current cell; `wraps` is the lap count. Finite scans are the
+/// *caller's* policy (budget and wrap limit). When `Empty` slots land,
+/// gap-skipping goes in `advance` — and the resting position automatically
+/// becomes the next non-empty cell (DESIGN.md, "Sparse vectors").
 struct ScanCursor {
     len: usize,
     pos: usize,
+    /// The cell this scan started from: advancing onto it completes a lap.
+    initial: usize,
     wraps: u32,
 }
 
@@ -152,6 +157,7 @@ impl ScanCursor {
         Self {
             len,
             pos: start,
+            initial: start,
             wraps: 0,
         }
     }
@@ -168,6 +174,8 @@ impl ScanCursor {
         self.pos += 1;
         if self.pos == self.len {
             self.pos = 0;
+        }
+        if self.pos == self.initial {
             self.wraps += 1;
         }
     }

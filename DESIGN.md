@@ -108,9 +108,13 @@ enum Instruction {
   rest time. (This rest rule is contingent on the mid-battle editing
   question — see "Sparse vectors" below.)
 - `unwrap: u8` on the card def, default 0: within one play — including any
-  future triggered sub-casts, which share the budget — the cursor may pass
-  slot 0 at most `unwrap` times. This kills free-cast infinite loops (a
-  lone "deal 10, then cast the next for free" node fizzles at budget end).
+  future triggered sub-casts, which share the budget — the scan may return
+  to **the cast's starting cell** at most `unwrap` times. Laps are counted
+  from the start, not from slot 0: a cast starting mid-vector still reaches
+  cells before its start (the catch-up lap is free), so content there never
+  starves and sparse wands don't misfire every other cast. This kills
+  free-cast infinite loops (a lone "deal 10, then cast the next for free"
+  node fizzles at budget end) without bounding the cycle itself.
 - Run-persistence of eval state: out of scope (not hard, just undesigned).
 
 ### Modifier scope: the block is the universal unit
