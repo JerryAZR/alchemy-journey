@@ -31,6 +31,20 @@ fn consume_card(id: u32, cost: u32) -> Card {
     )
 }
 
+/// Builds a single card around a hand-written instruction vector.
+fn program_card(effects: Vec<Instruction>, unwrap: u8) -> Card {
+    Card::new(
+        0,
+        CardDef {
+            name: "Program".to_string(),
+            cost: 0,
+            on_play: OnPlay::Reusable,
+            effects,
+            unwrap,
+        },
+    )
+}
+
 /// A stepping strike: 6, 7, 8 damage on successive casts, then wraps.
 fn stepping_strike(id: u32) -> Card {
     Card::new(
@@ -349,6 +363,31 @@ fn deterministic_seed_reproduces_state_and_events() {
 
 // --- Step 2: effects, stepping, targeting, combat end ---
 
+/// The Eval quota bug: a cast whose quota is spent must stop immediately —
+/// scanning on into an Eval must not retroactively extend the spent cast.
+/// First cast of [Damage(1), Eval(2), Damage(1), Damage(1)] is 1 damage.
+#[test]
+fn cast_stops_when_its_quota_is_spent() {
+    let card = Card::new(
+        0,
+        CardDef {
+            name: "Early Eval".to_string(),
+            cost: 0,
+            on_play: OnPlay::Reusable,
+            effects: vec![
+                Instruction::Apply(Atom::Damage(1)),
+                Instruction::Eval(2),
+                Instruction::Apply(Atom::Damage(1)),
+                Instruction::Apply(Atom::Damage(1)),
+            ],
+            unwrap: 0,
+        },
+    );
+    let mut s = starter_with(vec![card]);
+    play_at(&mut s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0))));
+    assert_eq!(s.enemies[0].hp, 29);
+}
+
 #[test]
 fn potion_lowering_is_mechanical() {
     let caster = PotionDef {
@@ -374,6 +413,64 @@ fn potion_lowering_is_mechanical() {
         chosen,
         [Instruction::Eval(1), Instruction::Apply(Atom::Damage(9))]
     );
+}
+
+/// Grouping semantics (DESIGN.md): Eval(N) makes the next N *blocks* one
+/// block, and groups nest multiplicatively.
+/// Eval(2) - Eval(2) - D - D - Eval(2) - D - D  =  Eval(2)[Eval(2)[D,D], Eval(2)[D,D]].
+#[test]
+fn eval_groups_nest_multiplicatively() {
+    let d = || Instruction::Apply(Atom::Damage(1));
+    let card = program_card(
+        vec![
+            Instruction::Eval(2),
+            Instruction::Eval(2),
+            d(),
+            d(),
+            Instruction::Eval(2),
+            d(),
+            d(),
+        ],
+        0,
+    );
+    let mut s = starter_with(vec![card]);
+    play_at(&mut s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0))));
+    assert_eq!(s.enemies[0].hp, 30 - 4);
+}
+
+/// Eval(2) - D - Eval(2) - D - D  =  Eval(2)[D, Eval(2)[D, D]]: 3 damage.
+#[test]
+fn eval_groups_compose_sequentially() {
+    let d = || Instruction::Apply(Atom::Damage(1));
+    let card = program_card(
+        vec![Instruction::Eval(2), d(), Instruction::Eval(2), d(), d()],
+        0,
+    );
+    let mut s = starter_with(vec![card]);
+    play_at(&mut s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0))));
+    assert_eq!(s.enemies[0].hp, 30 - 3);
+}
+
+/// The wrap budget lets a cast pass slot 0, re-reading instructions —
+/// including Eval, which groups again on the second lap.
+/// [Eval(3), D6, D7] with unwrap 1: one cast applies 6+7, wraps, 6+7 again.
+#[test]
+fn unwrap_budget_allows_one_lap_past_slot_zero() {
+    let card = program_card(
+        vec![
+            Instruction::Eval(3),
+            Instruction::Apply(Atom::Damage(6)),
+            Instruction::Apply(Atom::Damage(7)),
+        ],
+        1,
+    );
+    let mut s = starter_with(vec![card]);
+    play_at(&mut s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0))));
+    assert_eq!(s.enemies[0].hp, 30 - 26);
+    // The second cast starts over: another 26, which is lethal.
+    end_turn(&mut s, LOCAL_PLAYER); // discard, reshuffle, redraw the same card
+    play_at(&mut s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0))));
+    assert_eq!(s.outcome, Some(CombatOutcome::Victory));
 }
 
 /// A one-card deck plays the same instance every turn, so its cursor and

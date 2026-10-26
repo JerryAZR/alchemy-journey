@@ -60,37 +60,57 @@ impl PotionDef {
     }
 }
 
-/// The plan of one cast, produced by pure simulation of the scan: which
-/// instructions execute, where the cursor rests, the bind register at
-/// rest, and whether any applied atom consumes the chosen target. Shared
-/// by execution and the needs-target query so the two can never diverge.
+/// The plan of one cast, produced by pure simulation of the scan: the
+/// atoms to apply with their bind roles folded in, where the cursor rests,
+/// the bind register at rest, and whether any applied atom consumes the
+/// chosen target. Shared by execution and the needs-target query so the
+/// two can never diverge. Instruction-level bookkeeping (`Eval`,
+/// `BindTarget`) is fully resolved here and never reaches the executor.
 pub(crate) struct CastPlan {
-    pub(crate) steps: Vec<usize>,
+    pub(crate) casts: Vec<(Atom, TargetSpec)>,
     pub(crate) resting_cursor: usize,
     pub(crate) final_bind: TargetSpec,
     pub(crate) needs_chosen: bool,
 }
 
 /// Simulates one cast of `card` without touching any state (DESIGN.md:
-/// paused-stepping evaluation). A cast scans from the cursor, applying
-/// atoms until the budget (default 1, raised by `Eval`) is spent, the
-/// vector ends, or the wrap budget (`def.unwrap` — passing slot 0 counts)
-/// is exhausted. Reaching the vector end rests the cursor at 0, which is
+/// paused-stepping evaluation with grouping semantics).
+///
+/// Blocks and quotas: the unit of evaluation is the *block* — an atom, or
+/// a group built by `Eval(N)` ("the next N blocks become one block"). A
+/// cast consumes one root block. The scan tracks a quota stack: drawing an
+/// atom or an `Eval` spends one block of the innermost quota; `Eval` then
+/// pushes its own quota, which is how groups nest multiplicatively.
+/// Register instructions (`BindTarget`, and later modifiers) ride free —
+/// they are not blocks and never spend quota. A spent quota pops; when the
+/// stack empties, the cast ends immediately.
+///
+/// The scan stops at the vector end unless the wrap budget (`def.unwrap`)
+/// lets it pass slot 0; reaching the end rests the cursor at 0, which is
 /// what makes the next cast cycle.
+///
+/// Termination: each iteration consumes one instruction index and advances
+/// the cursor; each lap covers at most `len` indices and there are at most
+/// `unwrap + 1` laps. Exceeding that bound is a logic bug, so it panics —
+/// a test failure, never a hang.
 pub(crate) fn plan_cast(card: &Card) -> CastPlan {
     let effects = &card.def.effects;
     let mut plan = CastPlan {
-        steps: Vec::new(),
+        casts: Vec::new(),
         resting_cursor: 0,
         final_bind: card.bind,
         needs_chosen: false,
     };
-    let mut budget: u32 = 1;
-    let mut applied: u32 = 0;
+    let mut quotas: Vec<u32> = vec![1];
     let mut wraps_left = card.def.unwrap;
-    let mut i = card.cursor.min(effects.len());
+    let max_iterations = (card.def.unwrap as usize + 1) * effects.len();
+    let mut iterations = 0;
+    let mut i = card.cursor;
     loop {
-        if i >= effects.len() {
+        if quotas.is_empty() {
+            break; // root block complete: cursor rests on the next instruction
+        }
+        if i == effects.len() {
             if wraps_left == 0 {
                 break; // vector end: cast stops; cursor rests at 0
             }
@@ -98,30 +118,40 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
             i = 0;
             continue;
         }
+        iterations += 1;
+        assert!(
+            iterations <= max_iterations,
+            "plan_cast exceeded its iteration bound ({max_iterations})"
+        );
         match effects[i] {
             Instruction::Eval(n) => {
-                budget = n;
-                plan.steps.push(i);
+                // A group is one block of its parent, then pushes its own quota.
+                spend_block(&mut quotas);
+                quotas.push(n);
             }
             Instruction::BindTarget(spec) => {
-                plan.final_bind = spec;
-                plan.steps.push(i);
+                plan.final_bind = spec; // rides free: not a block
             }
-            Instruction::Apply(_) => {
-                if applied >= budget {
-                    break; // budget spent: cursor rests on this unconsumed instruction
-                }
-                applied += 1;
+            Instruction::Apply(atom) => {
+                spend_block(&mut quotas);
                 if plan.final_bind == TargetSpec::Chosen {
                     plan.needs_chosen = true;
                 }
-                plan.steps.push(i);
+                plan.casts.push((atom, plan.final_bind));
             }
         }
         i += 1;
     }
-    plan.resting_cursor = if i >= effects.len() { 0 } else { i };
+    plan.resting_cursor = if i == effects.len() { 0 } else { i };
     plan
+}
+
+/// Spends one block from the innermost quota and pops spent groups.
+fn spend_block(quotas: &mut Vec<u32>) {
+    *quotas.last_mut().expect("a drawn block always has a quota") -= 1;
+    while quotas.last() == Some(&0) {
+        quotas.pop();
+    }
 }
 
 /// Does the upcoming cast of this card consume the chosen target? A pure

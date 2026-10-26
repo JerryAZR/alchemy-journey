@@ -6,7 +6,7 @@ use rand::SeedableRng;
 use rand::seq::SliceRandom;
 
 use crate::effect::{Atom, TargetSpec};
-use crate::effect::{Instruction, cast_needs_target, plan_cast};
+use crate::effect::{cast_needs_target, plan_cast};
 use crate::state::Card;
 use crate::state::{
     CombatOutcome, CombatPlayer, CombatState, EnemyDef, EnemyId, OnPlay, PlayerId, PlayerRunState,
@@ -182,9 +182,11 @@ impl CombatState {
         }
     }
 
-    /// Executes one cast of `card`: runs the planned scan against live
+    /// Executes one cast of `card`: applies the planned atoms against live
     /// state, then writes the paused-evaluation registers (cursor, bind)
-    /// back onto the card instance (DESIGN.md).
+    /// back onto the card instance (DESIGN.md). All instruction-level
+    /// bookkeeping was resolved at plan time; this loop is deliberately
+    /// trivial.
     fn run_cast(
         &mut self,
         caster: PlayerId,
@@ -193,22 +195,15 @@ impl CombatState {
         events: &mut Vec<Event>,
     ) {
         let plan = plan_cast(card);
-        let mut bind = card.bind;
-        for &step in &plan.steps {
-            match card.def.effects[step] {
-                Instruction::Eval(_) => {}
-                Instruction::BindTarget(spec) => bind = spec,
-                Instruction::Apply(atom) => {
-                    let targets = self.resolve_spec(bind, caster, chosen);
-                    for target in targets {
-                        self.apply_atom(atom, target, events);
-                    }
-                    // Victory is checked after every atom application; a
-                    // card that ends the combat fizzles mid-scan.
-                    if self.check_victory(events) {
-                        break;
-                    }
-                }
+        for &(atom, spec) in &plan.casts {
+            let targets = self.resolve_spec(spec, caster, chosen);
+            for target in targets {
+                self.apply_atom(atom, target, events);
+            }
+            // Victory is checked after every atom application; a card that
+            // ends the combat fizzles mid-scan.
+            if self.check_victory(events) {
+                break;
             }
         }
         card.cursor = plan.resting_cursor;

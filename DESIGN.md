@@ -76,26 +76,65 @@ enum TargetSpec { Chosen, Caster, AllEnemies, AllAllies, Everyone }
 // BindTarget(Chosen) is also the way back from any other bind.
 
 enum Instruction {
-    Eval(u32),                // this cast applies up to N atoms (default: 1)
+    Eval(u32),                // the next N blocks become one block (grouping)
     BindTarget(TargetSpec),   // set the bind register until replaced
     Apply(Atom),              // apply one atom to the resolved target
 }
+// Future: Empty (gap) — see "Sparse vectors" below.
 ```
 
-### Evaluation model: paused stepping (Noita-style, per-cast)
+### Evaluation model: paused stepping with grouping (Noita-style)
 
-- Playing a card runs **one cast**: the scan starts at the card's cursor and
-  applies atoms until N are applied (default 1; `Eval(N)` raises it for the
-  current cast), the vector ends, or the wrap budget is exhausted.
+- The unit of evaluation is the **block**: an atom, or a group built by
+  `Eval(N)` ("the next N blocks become one block"). A cast consumes **one
+  root block**. (A stepping 6-7-8 damage card is three `Apply` nodes and
+  nothing else; a potion is `Eval(k)` grouping its k atoms.)
+- Groups **nest multiplicatively**: `Eval(2) - Eval(2) - D - D - Eval(2) -
+  D - D` is `Eval(2)[Eval(2)[D,D], Eval(2)[D,D]]` = 4 damage. The flat scan
+  implements this with a quota stack — drawing an atom or an `Eval` spends
+  one block of the innermost quota, `Eval` pushes its own quota, spent
+  quotas pop, and the cast ends the moment the stack empties. No tree is
+  built.
+- **Register instructions ride free**: `BindTarget`, and later modifiers,
+  are not blocks and never spend quota. (Potions rely on this: `Eval(k)`
+  counts atoms only, so the lowering's `BindTarget` doesn't break the
+  group.)
 - A cast is a **paused evaluation**: all eval state — cursor, pending
   modifiers, active bind — lives on the card instance and persists until
   combat end. After the last node the cursor wraps to 0 for the next cast.
-  (A stepping 6-7-8 damage card is three `Apply` nodes and nothing else.)
 - `unwrap: u8` on the card def, default 0: within one play — including any
   future triggered sub-casts, which share the budget — the cursor may pass
   slot 0 at most `unwrap` times. This kills free-cast infinite loops (a
   lone "deal 10, then cast the next for free" node fizzles at budget end).
 - Run-persistence of eval state: out of scope (not hard, just undesigned).
+
+### Modifier scope: the block is the universal unit
+
+Stepping consumes blocks, `Eval` builds blocks, and **modifiers target
+blocks**. A "double the next block" modifier wrapping an `Eval(N)` group
+wraps the whole group — the modifier cannot tell a group from an atom,
+which is precisely what makes it predictable. Corollaries:
+
+- A modifier *inside* a group rides free in the enclosing block's context
+  (it is not a block), so `Eval(2), Double, D, D` doubles only the first
+  `D` — the modifier is consumed by the next atom. Component naming must
+  make scope obvious.
+- "Next atom" modifiers (a different flavor, looking through groups) are
+  available as distinct components if content wants them — not a
+  reinterpretation of block-modifiers.
+- Implementation-wise: each quota-stack frame will carry the modifiers
+  pending when its block was entered. Exercised for real when the first
+  modifier ships; this principle is its specification.
+
+### Sparse vectors
+
+The editor surface is a slot vector, and the IR allows gaps: a future
+`Empty` instruction is skipped by the scan, is not a block, and never
+spends quota. **No packing step**: the vector the player edits is the
+vector that executes — one representation, cursor positions in the UI are
+the indices the evaluator sees. (Rejected alternative: pack at build time
+— that keeps two representations in sync and must save the sparse
+original anyway.)
 
 ### Targeting: one-rule resolution
 
