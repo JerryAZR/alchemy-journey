@@ -1,0 +1,143 @@
+//! The effect IR and its pure planning half (DESIGN.md): flat instruction
+//! vector + stateful sequential evaluator. Everything in this module is
+//! pure — nothing here touches `CombatState`; the state-mutating half of
+//! the evaluator (`apply_atom`, `resolve_spec`, `check_victory`) lives in
+//! `engine.rs`, where `&mut CombatState` lives.
+
+use crate::state::Card;
+
+/// The atomic effect vocabulary, shared by potions and spells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Atom {
+    Damage(u32),
+    Block(u32),
+}
+
+/// A target *role*, resolved to concrete units at application time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetSpec {
+    Caster,
+    AllEnemies,
+    AllAllies,
+    Everyone,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Instruction {
+    /// This cast applies up to N atoms (the default is 1). Potions lower
+    /// with their exact atom count; "evaluate all" needs no special case.
+    Eval(u32),
+    /// Redirect the following atoms until cleared or replaced.
+    BindTarget(TargetSpec),
+    /// Return to the chosen-target default.
+    ClearBind,
+    /// Apply one atom to the resolved target.
+    Apply(Atom),
+}
+
+/// Potion authoring type. The invariants (flat, single scope, predefined
+/// order) are enforced here, at the authoring layer, not in the executor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PotionDef {
+    pub scope: Scope,
+    pub effects: Vec<Atom>,
+}
+
+/// Per-potion target scope. `OneSide`/`Everyone` are deferred variants —
+/// no content needs them yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The drinker.
+    Caster,
+    /// One chosen unit; the player picks the target at play time.
+    OneUnit,
+}
+
+impl PotionDef {
+    /// Mechanical lowering into the IR (DESIGN.md). `Eval(k)` with the exact
+    /// atom count makes the whole vector one cast; `Caster` scope prepends a
+    /// bind; `OneUnit` leaves atoms on the chosen-target default.
+    pub fn lower(&self) -> Vec<Instruction> {
+        let mut out = vec![Instruction::Eval(self.effects.len() as u32)];
+        if self.scope == Scope::Caster {
+            out.push(Instruction::BindTarget(TargetSpec::Caster));
+        }
+        out.extend(self.effects.iter().copied().map(Instruction::Apply));
+        out
+    }
+}
+
+/// The plan of one cast, produced by pure simulation of the scan: which
+/// instructions execute, where the cursor rests, the bind register at
+/// rest, and whether any applied atom consumes the chosen target. Shared
+/// by execution and the needs-target query so the two can never diverge.
+pub(crate) struct CastPlan {
+    pub(crate) steps: Vec<usize>,
+    pub(crate) resting_cursor: usize,
+    pub(crate) final_bind: Option<TargetSpec>,
+    pub(crate) needs_chosen: bool,
+}
+
+/// Simulates one cast of `card` without touching any state (DESIGN.md:
+/// paused-stepping evaluation). A cast scans from the cursor, applying
+/// atoms until the budget (default 1, raised by `Eval`) is spent, the
+/// vector ends, or the wrap budget (`def.unwrap` — passing slot 0 counts)
+/// is exhausted. Reaching the vector end rests the cursor at 0, which is
+/// what makes the next cast cycle.
+pub(crate) fn plan_cast(card: &Card) -> CastPlan {
+    let effects = &card.def.effects;
+    let mut plan = CastPlan {
+        steps: Vec::new(),
+        resting_cursor: 0,
+        final_bind: card.bind,
+        needs_chosen: false,
+    };
+    let mut budget: u32 = 1;
+    let mut applied: u32 = 0;
+    let mut wraps_left = card.def.unwrap;
+    let mut i = card.cursor.min(effects.len());
+    loop {
+        if i >= effects.len() {
+            if wraps_left == 0 {
+                break; // vector end: cast stops; cursor rests at 0
+            }
+            wraps_left -= 1;
+            i = 0;
+            continue;
+        }
+        match effects[i] {
+            Instruction::Eval(n) => {
+                budget = n;
+                plan.steps.push(i);
+            }
+            Instruction::BindTarget(spec) => {
+                plan.final_bind = Some(spec);
+                plan.steps.push(i);
+            }
+            Instruction::ClearBind => {
+                plan.final_bind = None;
+                plan.steps.push(i);
+            }
+            Instruction::Apply(_) => {
+                if applied >= budget {
+                    break; // budget spent: cursor rests on this unconsumed instruction
+                }
+                applied += 1;
+                if plan.final_bind.is_none() {
+                    plan.needs_chosen = true;
+                }
+                plan.steps.push(i);
+            }
+        }
+        i += 1;
+    }
+    plan.resting_cursor = if i >= effects.len() { 0 } else { i };
+    plan
+}
+
+/// Does the upcoming cast of this card consume the chosen target? A pure
+/// query the UI builds its targeting flow on (DESIGN.md). Accepts the
+/// card's current registers; `chosen` validation happens in `validate`.
+pub fn cast_needs_target(card: &Card) -> bool {
+    plan_cast(card).needs_chosen
+}

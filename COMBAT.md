@@ -24,9 +24,14 @@ indices not pointers — not any particular variant list.
 
 ```rust
 struct PlayerId(u32);
+struct EnemyId(u32);   // index-stable: corpses are never removed
 
-/// As submitted by a player. Carries no identity.
-enum Intent { PlayCard { hand_index: usize }, EndTurn }
+/// A unit by identity, not index.
+enum UnitRef { Player(PlayerId), Enemy(EnemyId) }
+
+/// As submitted by a player. Carries no identity. The target is the single
+/// optional "chosen" target (DESIGN.md, two-rule target resolution).
+enum Intent { PlayCard { hand_index: usize, target: Option<UnitRef> }, EndTurn }
 
 /// As consumed by the core: identity stamped at submission.
 struct StampedIntent { actor: PlayerId, intent: Intent }
@@ -39,10 +44,16 @@ enum Event {
     HandDiscarded   { player: PlayerId, count: usize },
     CardDrawn       { player: PlayerId, /* card */ },
     DeckReshuffled  { player: PlayerId, count: usize },
+    // Effect reports (what the evaluator already applied — outputs, never
+    // inputs; frontends render them, nothing feeds them back in):
+    DamageDealt     { target: UnitRef, amount: u32, blocked: u32 },
+    BlockGained     { unit: UnitRef, amount: u32 },
+    UnitDied        { unit: UnitRef },
     // Shared machinery carries no identity:
     CombatBegan,
     TurnBegan       { turn: u32 },
     EnemyTurnPassed { /* enemy */ },
+    CombatOver      { outcome: CombatOutcome },
 }
 ```
 
@@ -68,7 +79,7 @@ The protocol accepts **user actions only**. Consequences are never input:
 
 | user action (input) | machinery (the core's own job) |
 |---|---|
-| `PlayCard { hand_index }` | card leaving hand, effects applied, discard/consume |
+| `PlayCard { hand_index, target }` | card leaving hand, effects applied, discard/consume |
 | `EndTurn` | turn ending, hand discard, enemy turn, next turn start, turn-start draw |
 
 Resolution is **synchronous and total**: `process` runs all machinery
@@ -176,6 +187,10 @@ means bug or desync — fail loud.
 Animations, replays (enabled by determinism + events, unbuilt), serde derives,
 networking, multiple player units, the lobby/join layer.
 
-Combat termination (win/loss, a terminal `CombatOver` phase) is a known
-*feature* gap — deliberately so: it arrives with damage in step 2. It is not a
-structural gap; the machinery above already supports a terminal resting state.
+Combat termination landed in step 2 in its minimal form: an `outcome` field
+set the moment the last enemy dies, a `CombatOver` event, and `validate`
+rejecting all later actions (`RejectReason::CombatOver`). The app shows the
+outcome and returns to the menu. Proper post-combat flow is designed with
+rooms & map traversal (and may be extended again with rewards); the loss
+path and the run-state writeback are deferred with it — neither is
+e2e-testable until multiple combats exist.

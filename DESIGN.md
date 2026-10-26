@@ -192,32 +192,32 @@ require reading history)
 - **For prototype playtesting, observability beats presentation**: event
   ordering and pile movements must be answerable from the terminal log.
 
-## Step-2 decisions pending the owner
+## Step-2 content decisions (ruled by the owner)
 
-The spell-casting mechanisms are settled (see the IR section). These
-*content/representation* decisions remain — discuss after the mechanisms
-land in code; the next agent must get owner rulings before implementing:
-
-1. **`CombatOver` representation and post-terminal behavior.** Resting
-   state (per the degenerate-state-machine lesson), event shape, and
-   whether `validate` rejects everything afterwards (new `RejectReason`).
-   App-side win/loss display and exit path.
-2. **Run-state writeback API** at combat end (HP back to `PlayerRunState`;
-   remove `consumed` card ids from the run deck — confirm that removal is
-   in scope for step 2), and what HP-on-loss means with no run layer yet.
-3. **Is the loss path in scope when unreachable in play?** (Inert enemy,
-   no self-damage card.) Implement-and-test via unit construction anyway,
-   or defer?
-4. **Starter content numbers**: how many Strike/Defend-like cards, costs,
-   values, enemy HP; whether shipped starter cards are Consume or Reusable;
-   whether a stepping 6-7-8 card joins the starter deck (it exercises the
-   cursor machinery in real play — the alternative is a test-only card).
-5. **Block-clear timing** (StS: at the start of the unit's own turn) —
-   confirm hook placement in `begin_player_turn`; does enemy block clearing
-   land now or with step 3?
-6. **New event shapes** (`DamageDealt` / `BlockGained` / `UnitDied` /
-   `CombatOver`): amounts pre/post block, actor fields — propose, get
-   ruling.
+- **`CombatOver`, minimal**: `CombatState.outcome: Option<CombatOutcome>` set
+  the moment the last enemy dies; `CombatOver { outcome }` emitted once;
+  `validate` then rejects everything (`RejectReason::CombatOver`). App shows
+  the outcome and returns to menu. Proper post-combat flow is designed with
+  rooms & map traversal (possibly extended again with rewards).
+- **Deferred with post-combat flow**: the loss path (`CombatOutcome` ships
+  with `Victory` only; `Defeat` lands when enemy damage does, step 3+) and
+  the run-state writeback API — neither is e2e-testable until multiple
+  combats exist.
+- **Starter deck**: 4× stepping strike (6-7-8 damage, 1⚡, reusable toggle,
+  chosen target — hand-written instruction vectors), 4× stepping defend
+  (5-6-7 block, 1⚡, reusable toggle, `[BindTarget(Caster), Apply×3]`),
+  1× 20-damage potion (0⚡, Consume, chosen target), 1× 15-block potion
+  (0⚡, Consume, caster) — the two true potions authored via `PotionDef`
+  lowering, the stepping cards hand-written (potion lowering's `Eval(k)`
+  would collapse the stepping). Enemy: Training Dummy, 30 HP.
+- **Block clears at the start of the unit's own turn** (StS rule): players
+  in `begin_player_turn`; the enemy-turn-start hook is placed now, inert
+  until step 3.
+- **Event shapes**: `DamageDealt { target, amount, blocked }`,
+  `BlockGained { unit, amount }`, `UnitDied { unit }`,
+  `CombatOver { outcome }`. No `source` field until statuses need
+  attribution. Events are **reports** — outputs the engine already applied;
+  frontends render them, nothing feeds them back in.
 
 ## Open questions (explicitly NOT settled)
 
