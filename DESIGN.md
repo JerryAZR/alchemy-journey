@@ -87,7 +87,7 @@ enum Instruction {
 
 - The unit of evaluation is the **block**: an atom, or a group built by
   `Eval(N)` ("the next N blocks become one block"). A cast consumes **one
-  root block**. (A stepping 6-7-8 damage card is three `Apply` nodes and
+  root block**. (A stepping 6-9-15 damage card is three `Apply` nodes and
   nothing else; a potion is `Eval(k)` grouping its k atoms.)
 - Groups **nest multiplicatively**: `Eval(2) - Eval(2) - D - D - Eval(2) -
   D - D` is `Eval(2)[Eval(2)[D,D], Eval(2)[D,D]]` = 4 damage. Conceptually
@@ -288,9 +288,10 @@ require reading history)
   with `Victory` only; `Defeat` lands when enemy damage does, step 3+) and
   the run-state writeback API — neither is e2e-testable until multiple
   combats exist.
-- **Starter deck**: 4× stepping strike (6-7-8 damage, 1⚡, reusable toggle,
-  chosen target — hand-written instruction vectors), 4× stepping defend
-  (5-6-7 block, 1⚡, reusable toggle, `[BindTarget(Caster), Apply×3]`),
+- **Starter deck**: 4× stepping strike (6-9-15 damage, costing 1-1-2,
+  reusable toggle, chosen target — hand-written instruction vectors),
+  4× stepping defend (5-12-25 block, costing 1-2-3, reusable toggle,
+  `[BindTarget(Caster), Apply×3]`),
   1× 20-damage potion (0⚡, Consume, chosen target), 1× 15-block potion
   (0⚡, Consume, caster) — the two true potions authored via `PotionDef`
   lowering, the stepping cards hand-written (potion lowering's `Eval(k)`

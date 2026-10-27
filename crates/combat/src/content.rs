@@ -6,10 +6,10 @@ use crate::state::{Card, CardDef, EnemyDef, OnPlay, PlayerRunState};
 use crate::wire::Event;
 use crate::{CombatState, LOCAL_PLAYER};
 
-/// The step-2 combat (DESIGN.md): 4× stepping strike (6-7-8) and 4× stepping
-/// defend (5-6-7) — reusable-toggle potions with hand-written instruction
-/// vectors — plus two true potions authored via `PotionDef` lowering. One
-/// inert dummy, 30 HP.
+/// The step-2 combat (DESIGN.md): 4× stepping strike (6-9-15, costing
+/// 1-1-2) and 4× stepping defend (5-12-25, costing 1-2-3) — reusable-toggle
+/// potions with hand-written instruction vectors — plus two true potions
+/// authored via `PotionDef` lowering. One inert dummy, 30 HP.
 pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
     let strike = |id: u32| {
         Card::new(
@@ -19,8 +19,8 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
                 on_play: OnPlay::Reusable,
                 effects: vec![
                     Instruction::apply(Atom::Damage(6), 1),
-                    Instruction::apply(Atom::Damage(7), 1),
-                    Instruction::apply(Atom::Damage(8), 1),
+                    Instruction::apply(Atom::Damage(9), 1),
+                    Instruction::apply(Atom::Damage(15), 2),
                 ],
                 unwrap: 0,
             },
@@ -35,8 +35,8 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
                 effects: vec![
                     Instruction::bind(TargetSpec::Caster, 0),
                     Instruction::apply(Atom::Block(5), 1),
-                    Instruction::apply(Atom::Block(6), 1),
-                    Instruction::apply(Atom::Block(7), 1),
+                    Instruction::apply(Atom::Block(12), 2),
+                    Instruction::apply(Atom::Block(25), 3),
                 ],
                 unwrap: 0,
             },

@@ -46,7 +46,8 @@ fn program_card(effects: Vec<Instruction>, unwrap: u8) -> Card {
     )
 }
 
-/// A stepping strike: 6, 7, 8 damage on successive casts, then wraps.
+/// A stepping strike: 6, 9, 15 damage (costing 1, 1, 2) on successive
+/// casts, then wraps.
 fn stepping_strike(id: u32) -> Card {
     Card::new(
         id,
@@ -55,15 +56,16 @@ fn stepping_strike(id: u32) -> Card {
             on_play: OnPlay::Reusable,
             effects: vec![
                 Instruction::apply(Atom::Damage(6), 1),
-                Instruction::apply(Atom::Damage(7), 1),
-                Instruction::apply(Atom::Damage(8), 1),
+                Instruction::apply(Atom::Damage(9), 1),
+                Instruction::apply(Atom::Damage(15), 2),
             ],
             unwrap: 0,
         },
     )
 }
 
-/// A stepping defend: 5, 6, 7 block to the caster on successive casts.
+/// A stepping defend: 5, 12, 25 block (costing 1, 2, 3) to the caster on
+/// successive casts.
 fn stepping_defend(id: u32) -> Card {
     Card::new(
         id,
@@ -73,8 +75,8 @@ fn stepping_defend(id: u32) -> Card {
             effects: vec![
                 Instruction::bind(TargetSpec::Caster, 0),
                 Instruction::apply(Atom::Block(5), 1),
-                Instruction::apply(Atom::Block(6), 1),
-                Instruction::apply(Atom::Block(7), 1),
+                Instruction::apply(Atom::Block(12), 2),
+                Instruction::apply(Atom::Block(25), 3),
             ],
             unwrap: 0,
         },
@@ -547,11 +549,22 @@ fn one_card_loop(card: Card) -> CombatState {
     starter_with(vec![card])
 }
 
+/// Same, against a dummy that survives the full strike cycle (6+9+15+6).
+fn one_card_loop_tough(card: Card) -> CombatState {
+    combat_with(
+        vec![card],
+        &[EnemyDef {
+            name: "E".to_string(),
+            hp: 100,
+        }],
+    )
+}
+
 #[test]
 fn stepping_strike_cycles_and_wraps() {
-    let mut s = one_card_loop(stepping_strike(0));
+    let mut s = one_card_loop_tough(stepping_strike(0));
     let enemy = Some(UnitRef::Enemy(EnemyId(0)));
-    for (turn, expected) in [(1, 6), (2, 7), (3, 8), (4, 6)] {
+    for (turn, expected) in [(1, 6), (2, 9), (3, 15), (4, 6)] {
         assert_eq!(s.turn, turn);
         let events = play_at(&mut s, LOCAL_PLAYER, 0, enemy);
         assert!(events.contains(&Event::DamageDealt {
@@ -561,7 +574,7 @@ fn stepping_strike_cycles_and_wraps() {
         }));
         assert_eq!(
             s.enemies[0].hp,
-            30 - [6, 7, 8, 6][..turn as usize].iter().sum::<u32>()
+            100 - [6, 9, 15, 6][..turn as usize].iter().sum::<u32>()
         );
         end_turn(&mut s, LOCAL_PLAYER); // discard, reshuffle, redraw the same card
     }
@@ -570,7 +583,7 @@ fn stepping_strike_cycles_and_wraps() {
 #[test]
 fn stepping_defend_binds_the_caster_across_casts() {
     let mut s = one_card_loop(stepping_defend(0));
-    for expected in [5, 6, 7] {
+    for expected in [5, 12, 25] {
         // The bind set in the first cast governs every later cast: the card
         // never needs a chosen target.
         assert!(!cast_needs_target(&s.player(LOCAL_PLAYER).unwrap().hand[0]));
