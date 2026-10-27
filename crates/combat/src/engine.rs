@@ -6,7 +6,7 @@ use rand::SeedableRng;
 use rand::seq::SliceRandom;
 
 use crate::effect::{Atom, TargetSpec};
-use crate::effect::{cast_needs_target, plan_cast};
+use crate::effect::{CastPlan, plan_cast};
 use crate::state::Card;
 use crate::state::{
     CombatOutcome, CombatPlayer, CombatState, EnemyDef, EnemyId, OnPlay, PlayerId, PlayerRunState,
@@ -106,12 +106,13 @@ impl CombatState {
                 let Some(card) = player.hand.get(hand_index) else {
                     return Err(RejectReason::InvalidHandIndex);
                 };
-                if player.energy < card.def.cost {
+                let plan = plan_cast(card);
+                if player.energy < plan.cost {
                     return Err(RejectReason::NotEnoughEnergy);
                 }
                 // Strict targeting (DESIGN.md): a missing-when-needed target
                 // rejects, and a supplied-but-unconsumed target rejects.
-                match (cast_needs_target(card), target) {
+                match (plan.needs_chosen, target) {
                     (true, None) => Err(RejectReason::TargetRequired),
                     (false, Some(_)) => Err(RejectReason::TargetNotUsed),
                     (true, Some(t)) => match self.unit(t) {
@@ -168,13 +169,14 @@ impl CombatState {
         events: &mut Vec<Event>,
     ) {
         let mut card = self.players[player_index].hand.remove(hand_index);
-        self.players[player_index].energy -= card.def.cost;
+        let plan = plan_cast(&card);
+        self.players[player_index].energy -= plan.cost;
         // The echo reports the card as it was played (pre-cast eval state).
         events.push(Event::CardPlayed {
             actor,
             card: card.clone(),
         });
-        self.run_cast(actor, &mut card, target, events);
+        self.run_cast(actor, &mut card, plan, target, events);
         let player = &mut self.players[player_index];
         match card.def.on_play {
             OnPlay::Reusable => player.discard.push(card),
@@ -191,10 +193,10 @@ impl CombatState {
         &mut self,
         caster: PlayerId,
         card: &mut Card,
+        plan: CastPlan,
         chosen: Option<UnitRef>,
         events: &mut Vec<Event>,
     ) {
-        let plan = plan_cast(card);
         for &(atom, spec) in &plan.casts {
             let targets = self.resolve_spec(spec, caster, chosen);
             for target in targets {

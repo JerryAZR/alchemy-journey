@@ -25,16 +25,49 @@ pub enum TargetSpec {
     Everyone,
 }
 
+/// One node in a card's program. Cost is a property of the *node*
+/// (DESIGN.md): a component's price travels with it, not with the wand —
+/// a 6-damage component costs 1 wherever it is, and Eval/BindTarget are
+/// components too. A cast costs the sum of the nodes it consumes, so
+/// stepping wands price each cast by what it actually does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Instruction {
-    /// This cast applies up to N atoms (the default is 1). Potions lower
-    /// with their exact atom count; "evaluate all" needs no special case.
+pub struct Instruction {
+    pub cost: u32,
+    pub kind: InstructionKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionKind {
+    /// The next N blocks become one block (grouping).
     Eval(u32),
     /// Set the bind register: following atoms resolve against this role
     /// until another `BindTarget` replaces it.
     BindTarget(TargetSpec),
     /// Apply one atom to the resolved target.
     Apply(Atom),
+}
+
+impl Instruction {
+    pub fn eval(n: u32, cost: u32) -> Self {
+        Self {
+            cost,
+            kind: InstructionKind::Eval(n),
+        }
+    }
+
+    pub fn bind(spec: TargetSpec, cost: u32) -> Self {
+        Self {
+            cost,
+            kind: InstructionKind::BindTarget(spec),
+        }
+    }
+
+    pub fn apply(atom: Atom, cost: u32) -> Self {
+        Self {
+            cost,
+            kind: InstructionKind::Apply(atom),
+        }
+    }
 }
 
 /// Potion authoring type. The invariants (flat, single scope, predefined
@@ -50,12 +83,14 @@ impl PotionDef {
     /// Mechanical lowering into the IR (DESIGN.md). `Eval(k)` with the exact
     /// atom count makes the whole vector one cast; a non-`Chosen` target
     /// prepends a bind; `Chosen` needs none — it is the register's default.
+    /// Potions are zero-cost by rule: every node lowers with cost 0 (their
+    /// price is the run-level resource, not energy).
     pub fn lower(&self) -> Vec<Instruction> {
-        let mut out = vec![Instruction::Eval(self.effects.len() as u32)];
+        let mut out = vec![Instruction::eval(self.effects.len() as u32, 0)];
         if self.target != TargetSpec::Chosen {
-            out.push(Instruction::BindTarget(self.target));
+            out.push(Instruction::bind(self.target, 0));
         }
-        out.extend(self.effects.iter().copied().map(Instruction::Apply));
+        out.extend(self.effects.iter().map(|&a| Instruction::apply(a, 0)));
         out
     }
 }
@@ -71,6 +106,10 @@ pub(crate) struct CastPlan {
     pub(crate) resting_cursor: usize,
     pub(crate) final_bind: TargetSpec,
     pub(crate) needs_chosen: bool,
+    /// Energy the cast charges: the sum of the costs of the nodes it
+    /// consumes. Per-cast pricing (DESIGN.md): a stepping wand's casts
+    /// each cost what they do.
+    pub(crate) cost: u32,
 }
 
 /// Simulates one cast of `card` without touching any state (DESIGN.md:
@@ -100,6 +139,7 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
         resting_cursor: 0,
         final_bind: card.bind,
         needs_chosen: false,
+        cost: 0,
     };
     if effects.is_empty() {
         return plan;
@@ -108,15 +148,17 @@ pub(crate) fn plan_cast(card: &Card) -> CastPlan {
     let mut budget: u32 = 1;
     loop {
         let i = scan.position();
-        match effects[i] {
-            Instruction::Eval(n) => {
+        let instruction = effects[i];
+        plan.cost += instruction.cost;
+        match instruction.kind {
+            InstructionKind::Eval(n) => {
                 // A group spends one block of its parent, then adds its own.
                 budget = budget - 1 + n;
             }
-            Instruction::BindTarget(spec) => {
+            InstructionKind::BindTarget(spec) => {
                 plan.final_bind = spec; // rides free: not a block
             }
-            Instruction::Apply(atom) => {
+            InstructionKind::Apply(atom) => {
                 budget -= 1;
                 if plan.final_bind == TargetSpec::Chosen {
                     plan.needs_chosen = true;
@@ -186,4 +228,10 @@ impl ScanCursor {
 /// card's current registers; `chosen` validation happens in `validate`.
 pub fn cast_needs_target(card: &Card) -> bool {
     plan_cast(card).needs_chosen
+}
+
+/// What the upcoming cast of this card costs. A pure query the UI displays
+/// on the card face, next to the cursor bracket.
+pub fn cast_cost(card: &Card) -> u32 {
+    plan_cast(card).cost
 }

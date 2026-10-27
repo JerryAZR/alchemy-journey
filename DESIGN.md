@@ -26,9 +26,9 @@ AGENTS.md. History and rationale live in `devlog/`.
 
 ## The card model
 
-- The combat engine knows only **cards**: `{ cost, effects, on_play }` where
-  `on_play ∈ { Reusable, Consume }`. "Potion" vs "spell" is **provenance**
-  (brewed vs. assembled), not an engine distinction.
+- The combat engine knows only **cards**: `{ effects, on_play, unwrap }`
+  where `on_play ∈ { Reusable, Consume }`. "Potion" vs "spell" is
+  **provenance** (brewed vs. assembled), not an engine distinction.
 - Potions sit **in the deck**, same as spells — you reach into the bag and
   draw scrolls and vials alike. Played potions go to the `consumed` pile and
   are removed from the run deck at combat end.
@@ -156,6 +156,26 @@ original anyway.)
   finds the next non-empty cell) so the cursor always rests on a
   meaningful cell — better UX. Current code rests on the next cell: the
   editing-safe default. The switch is localized to `ScanOrder` either way.
+
+### Energy and cost: per-cast pricing
+
+- **Cost is a property of the instruction node**, not the card: a 6-damage
+  component costs 1 wherever it sits; `Eval`, `BindTarget`, and future
+  modifiers are components too and can carry costs. There is no card-level
+  cost field.
+- **A cast charges the sum of the nodes it consumes.** The plan already
+  computes what a cast consumes, so cost falls out of `plan_cast` —
+  per-cast pricing for free. This is what makes stepping wands balanceable:
+  a wand alternating a cheap poke and an expensive finisher prices each
+  cast by what it does (a fixed per-card cost has no fair answer).
+- Cost is **authored per component** (a balance lever), never computed from
+  magnitude.
+- **Potions are zero-cost by rule**: `PotionDef::lower()` emits cost-0
+  nodes — a potion's price is the run-level resource, not energy.
+- The card face shows the next cast's cost (pure query `cast_cost`, same
+  pattern as `cast_needs_target`), keeping the stepping cost predictable.
+- Energy itself unchanged: flat 3/turn. (Per-wand mana capacity is a
+  wand-property question, parked until spell assembly.)
 
 ### Targeting: one-rule resolution
 

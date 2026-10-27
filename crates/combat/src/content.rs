@@ -16,12 +16,11 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
             id,
             CardDef {
                 name: "Strike Draught".to_string(),
-                cost: 1,
                 on_play: OnPlay::Reusable,
                 effects: vec![
-                    Instruction::Apply(Atom::Damage(6)),
-                    Instruction::Apply(Atom::Damage(7)),
-                    Instruction::Apply(Atom::Damage(8)),
+                    Instruction::apply(Atom::Damage(6), 1),
+                    Instruction::apply(Atom::Damage(7), 1),
+                    Instruction::apply(Atom::Damage(8), 1),
                 ],
                 unwrap: 0,
             },
@@ -32,13 +31,12 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
             id,
             CardDef {
                 name: "Ward Draught".to_string(),
-                cost: 1,
                 on_play: OnPlay::Reusable,
                 effects: vec![
-                    Instruction::BindTarget(TargetSpec::Caster),
-                    Instruction::Apply(Atom::Block(5)),
-                    Instruction::Apply(Atom::Block(6)),
-                    Instruction::Apply(Atom::Block(7)),
+                    Instruction::bind(TargetSpec::Caster, 0),
+                    Instruction::apply(Atom::Block(5), 1),
+                    Instruction::apply(Atom::Block(6), 1),
+                    Instruction::apply(Atom::Block(7), 1),
                 ],
                 unwrap: 0,
             },
@@ -49,7 +47,6 @@ pub fn starter_combat(seed: u64) -> (CombatState, Vec<Event>) {
             id,
             CardDef {
                 name: name.to_string(),
-                cost: 0,
                 on_play: OnPlay::Consume,
                 effects: def.lower(),
                 unwrap: 0,

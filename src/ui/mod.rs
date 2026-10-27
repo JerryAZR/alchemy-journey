@@ -2,8 +2,8 @@
 //! player intents. It never mutates combat state (COMBAT.md Ruling 4).
 
 use alchemy_combat::{
-    Atom, Card, CombatOutcome, CombatPlayer, CombatState, EnemyId, Instruction, Intent,
-    LOCAL_PLAYER, Unit, UnitRef, cast_needs_target,
+    Atom, Card, CombatOutcome, CombatPlayer, CombatState, EnemyId, InstructionKind, Intent,
+    LOCAL_PLAYER, Unit, UnitRef, cast_cost, cast_needs_target,
 };
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -392,11 +392,11 @@ fn spawn_bottom_bar(
 fn effect_line(card: &Card) -> String {
     let mut parts = Vec::new();
     for (i, instruction) in card.def.effects.iter().enumerate() {
-        let text = match instruction {
-            Instruction::Eval(n) => format!("all({n})"),
-            Instruction::BindTarget(_) => "bind".to_string(),
-            Instruction::Apply(Atom::Damage(n)) => format!("{n}dmg"),
-            Instruction::Apply(Atom::Block(n)) => format!("{n}blk"),
+        let text = match instruction.kind {
+            InstructionKind::Eval(n) => format!("all({n})"),
+            InstructionKind::BindTarget(_) => "bind".to_string(),
+            InstructionKind::Apply(Atom::Damage(n)) => format!("{n}dmg"),
+            InstructionKind::Apply(Atom::Block(n)) => format!("{n}blk"),
         };
         if i == card.cursor {
             parts.push(format!("[{text}]"));
@@ -463,7 +463,7 @@ fn card_button(card: &Card, armed: bool) -> impl Bundle {
         BackgroundColor(base),
         children![
             label(
-                format!("Cost {}", card.def.cost),
+                format!("Cost {}", cast_cost(card)),
                 13.0,
                 Color::srgb(0.9, 0.9, 0.7)
             ),

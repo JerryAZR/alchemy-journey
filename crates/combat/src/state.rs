@@ -55,9 +55,9 @@ pub enum OnPlay {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardDef {
     pub name: String,
-    pub cost: u32,
     pub on_play: OnPlay,
-    /// The flat effect program (DESIGN.md).
+    /// The flat effect program (DESIGN.md). Cost is per-node: a cast
+    /// charges the sum of the nodes it consumes (see `Instruction`).
     pub effects: Vec<Instruction>,
     /// Within one play, the scan may return to the cast's starting cell at
     /// most this many times (shared across any future triggered sub-casts).

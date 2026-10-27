@@ -10,25 +10,27 @@ fn reusable_card(id: u32, cost: u32) -> Card {
         id,
         CardDef {
             name: format!("Test Card {id}"),
-            cost,
             on_play: OnPlay::Reusable,
-            effects: vec![],
+            // A cost is carried by nodes, so a costed card needs one:
+            // a caster-bound block nobody observes.
+            effects: if cost > 0 {
+                vec![
+                    Instruction::bind(TargetSpec::Caster, 0),
+                    Instruction::apply(Atom::Block(1), cost),
+                ]
+            } else {
+                vec![]
+            },
             unwrap: 0,
         },
     )
 }
 
 fn consume_card(id: u32, cost: u32) -> Card {
-    Card::new(
-        id,
-        CardDef {
-            name: format!("Test Potion {id}"),
-            cost,
-            on_play: OnPlay::Consume,
-            effects: vec![],
-            unwrap: 0,
-        },
-    )
+    let mut card = reusable_card(id, cost);
+    card.def.on_play = OnPlay::Consume;
+    card.def.name = format!("Test Potion {id}");
+    card
 }
 
 /// Builds a single card around a hand-written instruction vector.
@@ -37,7 +39,6 @@ fn program_card(effects: Vec<Instruction>, unwrap: u8) -> Card {
         0,
         CardDef {
             name: "Program".to_string(),
-            cost: 0,
             on_play: OnPlay::Reusable,
             effects,
             unwrap,
@@ -51,12 +52,11 @@ fn stepping_strike(id: u32) -> Card {
         id,
         CardDef {
             name: format!("Strike {id}"),
-            cost: 1,
             on_play: OnPlay::Reusable,
             effects: vec![
-                Instruction::Apply(Atom::Damage(6)),
-                Instruction::Apply(Atom::Damage(7)),
-                Instruction::Apply(Atom::Damage(8)),
+                Instruction::apply(Atom::Damage(6), 1),
+                Instruction::apply(Atom::Damage(7), 1),
+                Instruction::apply(Atom::Damage(8), 1),
             ],
             unwrap: 0,
         },
@@ -69,13 +69,12 @@ fn stepping_defend(id: u32) -> Card {
         id,
         CardDef {
             name: format!("Defend {id}"),
-            cost: 1,
             on_play: OnPlay::Reusable,
             effects: vec![
-                Instruction::BindTarget(TargetSpec::Caster),
-                Instruction::Apply(Atom::Block(5)),
-                Instruction::Apply(Atom::Block(6)),
-                Instruction::Apply(Atom::Block(7)),
+                Instruction::bind(TargetSpec::Caster, 0),
+                Instruction::apply(Atom::Block(5), 1),
+                Instruction::apply(Atom::Block(6), 1),
+                Instruction::apply(Atom::Block(7), 1),
             ],
             unwrap: 0,
         },
@@ -88,7 +87,6 @@ fn firebomb(id: u32) -> Card {
         id,
         CardDef {
             name: format!("Firebomb {id}"),
-            cost: 0,
             on_play: OnPlay::Consume,
             effects: PotionDef {
                 target: TargetSpec::Chosen,
@@ -266,8 +264,8 @@ fn illegal_intents_fail_validation() {
     // 3 energy, cards cost 1: three plays succeed, the fourth is rejected.
     for _ in 0..3 {
         assert!(matches!(
-            play(&mut s, LOCAL_PLAYER, 0).as_slice(),
-            [Event::CardPlayed { .. }]
+            play(&mut s, LOCAL_PLAYER, 0).first(),
+            Some(Event::CardPlayed { .. })
         ));
     }
     assert_eq!(
@@ -372,13 +370,12 @@ fn cast_stops_when_its_quota_is_spent() {
         0,
         CardDef {
             name: "Early Eval".to_string(),
-            cost: 0,
             on_play: OnPlay::Reusable,
             effects: vec![
-                Instruction::Apply(Atom::Damage(1)),
-                Instruction::Eval(2),
-                Instruction::Apply(Atom::Damage(1)),
-                Instruction::Apply(Atom::Damage(1)),
+                Instruction::apply(Atom::Damage(1), 0),
+                Instruction::eval(2, 0),
+                Instruction::apply(Atom::Damage(1), 0),
+                Instruction::apply(Atom::Damage(1), 0),
             ],
             unwrap: 0,
         },
@@ -398,10 +395,10 @@ fn potion_lowering_is_mechanical() {
     assert_eq!(
         caster,
         [
-            Instruction::Eval(2),
-            Instruction::BindTarget(TargetSpec::Caster),
-            Instruction::Apply(Atom::Block(5)),
-            Instruction::Apply(Atom::Block(3)),
+            Instruction::eval(2, 0),
+            Instruction::bind(TargetSpec::Caster, 0),
+            Instruction::apply(Atom::Block(5), 0),
+            Instruction::apply(Atom::Block(3), 0),
         ]
     );
     let chosen = PotionDef {
@@ -411,7 +408,10 @@ fn potion_lowering_is_mechanical() {
     .lower();
     assert_eq!(
         chosen,
-        [Instruction::Eval(1), Instruction::Apply(Atom::Damage(9))]
+        [
+            Instruction::eval(1, 0),
+            Instruction::apply(Atom::Damage(9), 0)
+        ]
     );
 }
 
@@ -420,14 +420,14 @@ fn potion_lowering_is_mechanical() {
 /// Eval(2) - Eval(2) - D - D - Eval(2) - D - D  =  Eval(2)[Eval(2)[D,D], Eval(2)[D,D]].
 #[test]
 fn eval_groups_nest_multiplicatively() {
-    let d = || Instruction::Apply(Atom::Damage(1));
+    let d = || Instruction::apply(Atom::Damage(1), 0);
     let card = program_card(
         vec![
-            Instruction::Eval(2),
-            Instruction::Eval(2),
+            Instruction::eval(2, 0),
+            Instruction::eval(2, 0),
             d(),
             d(),
-            Instruction::Eval(2),
+            Instruction::eval(2, 0),
             d(),
             d(),
         ],
@@ -441,9 +441,15 @@ fn eval_groups_nest_multiplicatively() {
 /// Eval(2) - D - Eval(2) - D - D  =  Eval(2)[D, Eval(2)[D, D]]: 3 damage.
 #[test]
 fn eval_groups_compose_sequentially() {
-    let d = || Instruction::Apply(Atom::Damage(1));
+    let d = || Instruction::apply(Atom::Damage(1), 0);
     let card = program_card(
-        vec![Instruction::Eval(2), d(), Instruction::Eval(2), d(), d()],
+        vec![
+            Instruction::eval(2, 0),
+            d(),
+            Instruction::eval(2, 0),
+            d(),
+            d(),
+        ],
         0,
     );
     let mut s = starter_with(vec![card]);
@@ -458,9 +464,9 @@ fn eval_groups_compose_sequentially() {
 fn unwrap_budget_allows_one_lap_past_slot_zero() {
     let card = program_card(
         vec![
-            Instruction::Eval(3),
-            Instruction::Apply(Atom::Damage(6)),
-            Instruction::Apply(Atom::Damage(7)),
+            Instruction::eval(3, 0),
+            Instruction::apply(Atom::Damage(6), 0),
+            Instruction::apply(Atom::Damage(7), 0),
         ],
         1,
     );
@@ -485,9 +491,9 @@ fn unwrap_budget_allows_one_lap_past_slot_zero() {
 fn content_before_the_cursor_does_not_starve() {
     let card = program_card(
         vec![
-            Instruction::Apply(Atom::Damage(6)),
-            Instruction::BindTarget(TargetSpec::Chosen),
-            Instruction::BindTarget(TargetSpec::Chosen),
+            Instruction::apply(Atom::Damage(6), 0),
+            Instruction::bind(TargetSpec::Chosen, 0),
+            Instruction::bind(TargetSpec::Chosen, 0),
         ],
         0,
     );
@@ -499,6 +505,40 @@ fn content_before_the_cursor_does_not_starve() {
     end_turn(&mut s, LOCAL_PLAYER);
     play_at(&mut s, LOCAL_PLAYER, 0, enemy);
     assert_eq!(s.enemies[0].hp, 18); // not 24: the second cast fires too
+}
+
+/// Per-cast pricing (DESIGN.md): a card charges the sum of the nodes the
+/// cast consumes, so a stepping wand's casts can cost differently.
+#[test]
+fn cast_cost_is_charged_per_cast() {
+    let card = program_card(
+        vec![
+            Instruction::apply(Atom::Damage(6), 1),
+            Instruction::apply(Atom::Damage(7), 2),
+        ],
+        0,
+    );
+    let mut s = one_card_loop(card);
+    let enemy = Some(UnitRef::Enemy(EnemyId(0)));
+    // First cast costs 1 (the 6-damage step).
+    play_at(&mut s, LOCAL_PLAYER, 0, enemy);
+    assert_eq!(s.player(LOCAL_PLAYER).unwrap().energy, ENERGY_PER_TURN - 1);
+    end_turn(&mut s, LOCAL_PLAYER);
+    // Second cast costs 2 (the 7-damage step).
+    play_at(&mut s, LOCAL_PLAYER, 0, enemy);
+    assert_eq!(s.player(LOCAL_PLAYER).unwrap().energy, ENERGY_PER_TURN - 2);
+}
+
+/// A cast whose cost exceeds the player's energy is rejected.
+#[test]
+fn unaffordable_casts_are_rejected() {
+    let card = program_card(vec![Instruction::apply(Atom::Damage(6), 4)], 0);
+    let s = starter_with(vec![card]);
+    assert_eq!(cast_cost(&s.player(LOCAL_PLAYER).unwrap().hand[0]), 4);
+    assert_eq!(
+        validate_play(&s, LOCAL_PLAYER, 0, Some(UnitRef::Enemy(EnemyId(0)))),
+        Err(RejectReason::NotEnoughEnergy)
+    );
 }
 
 /// A one-card deck plays the same instance every turn, so its cursor and
@@ -599,13 +639,12 @@ fn victory_fizzles_the_rest_of_the_card() {
         0,
         CardDef {
             name: "Overkill".to_string(),
-            cost: 0,
             on_play: OnPlay::Consume,
             effects: vec![
-                Instruction::Eval(2),
-                Instruction::Apply(Atom::Damage(99)),
-                Instruction::BindTarget(TargetSpec::Caster),
-                Instruction::Apply(Atom::Block(10)),
+                Instruction::eval(2, 0),
+                Instruction::apply(Atom::Damage(99), 0),
+                Instruction::bind(TargetSpec::Caster, 0),
+                Instruction::apply(Atom::Block(10), 0),
             ],
             unwrap: 0,
         },
@@ -682,12 +721,11 @@ fn all_enemies_binds_expand_to_living_units_only() {
         0,
         CardDef {
             name: "Shockwave".to_string(),
-            cost: 0,
             on_play: OnPlay::Consume,
             effects: vec![
-                Instruction::Eval(1),
-                Instruction::BindTarget(TargetSpec::AllEnemies),
-                Instruction::Apply(Atom::Damage(5)),
+                Instruction::eval(1, 0),
+                Instruction::bind(TargetSpec::AllEnemies, 0),
+                Instruction::apply(Atom::Damage(5), 0),
             ],
             unwrap: 0,
         },
@@ -809,7 +847,10 @@ fn two_engines_stay_in_lockstep() {
                 break;
             }
             let player = host.player(LOCAL_PLAYER).unwrap();
-            let playable = player.hand.iter().position(|c| c.def.cost <= player.energy);
+            let playable = player
+                .hand
+                .iter()
+                .position(|c| cast_cost(c) <= player.energy);
             let Some(hand_index) = playable else { break };
             let target = if cast_needs_target(&player.hand[hand_index]) {
                 let Some(t) = first_living_enemy(&host) else {
