@@ -174,6 +174,13 @@ original anyway.)
   nodes — a potion's price is the run-level resource, not energy.
 - The card face shows the next cast's cost (pure query `cast_cost`, same
   pattern as `cast_needs_target`), keeping the stepping cost predictable.
+- **Known, deliberate limitation: cost is plan-time and state-free.**
+  `plan_cast` reads only the card's program and registers — that purity is
+  what makes the preview queries cheap — so cost cannot depend on the
+  target or any live state. StS's "if target satisfies X, recover Y energy"
+  pattern is expressible in a different seat: as execution-time effects
+  (a future `GainEnergy` atom or conditional instruction resolving against
+  the live target mid-scan), i.e. charge-then-refund, not dynamic pricing.
 - Energy itself unchanged: flat 3/turn. (Per-wand mana capacity is a
   wand-property question, parked until spell assembly.)
 
